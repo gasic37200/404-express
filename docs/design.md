@@ -1,0 +1,133 @@
+# 404-express 설계
+
+JustCommit(식물 중고거래) 서버가 쓰는 **가짜 택배사**. 당근 택배를 모방한다.
+판매자가 문앞에 두면 택배사가 수거하고, 배송 중 → 배송 완료로 진행한다.
+
+## 상태
+
+| 코드 | UI 이름 | 설명 |
+|---|---|---|
+| `RESERVED` | 택배 예약 | 예약 완료, 송장 발급 (발송 전) |
+| `PICKED_UP` | 접수 완료 | 수거 완료 |
+| `IN_TRANSIT` | 배송 중 | 허브 이동 중 |
+| `DELIVERED` | 배송 완료 | 도착 |
+| `CANCELLED` | 접수 취소 | 수거 전에 취소됨 |
+
+- `RESERVED → PICKED_UP → IN_TRANSIT → DELIVERED` 순서로만 진행한다. 취소는 `RESERVED`에서만 된다.
+- 기본은 시간 기반 자동 진행이다: 수거 3분 / 배송 중 2분 / 배송 완료 2분 (`*_DELAY_SEC`).
+- 택배 1건 = 서버의 판매자 주문(구매자·판매자 묶음) 1건. 택배사는 품목을 모른다.
+  부분 취소는 서버 내부 일이고, 묶음 전체가 취소될 때만 서버가 취소 API를 부른다.
+
+## 식별자
+
+| 이름 | 누가 만드나 | 형식 | 쓰임 |
+|---|---|---|---|
+| `courierOrderNo` | 서버 | `shipment-yyyyMMdd-NNNNNN` (`NNNNNN` = 서버 배송(shipment) ID 6자리) | 예약 요청의 `Idempotency-Key` |
+| `trackingNo` | 택배사 | `404` + 9자리 일련번호 (`404000000001`) | URL 경로의 배송 ID, 송장번호 |
+
+## API
+
+모든 응답은 JustCommit `ApiResponse`와 같은 모양: `{ status, code?, message, data? }` (null 필드 생략).
+시각은 ISO-8601 KST (`2026-10-08T15:30:00+09:00`).
+
+| 메서드 | 경로 | 인증 | 설명 |
+|---|---|---|---|
+| POST | `/api/v1/shipments` | `X-Api-Key` | 예약 |
+| GET | `/api/v1/shipments/{trackingNo}` | `X-Api-Key` | 조회 (서버 polling용) |
+| POST | `/api/v1/shipments/{trackingNo}/cancel` | `X-Api-Key` | 취소 |
+| POST | `/api/v1/admin/shipments/{trackingNo}/advance` | `X-Admin-Key` | 테스트용 한 칸 진행 |
+| GET | `/api/v1/admin/webhooks?status=DEAD` | `X-Admin-Key` | 웹훅 이벤트 목록 (`PENDING`/`SENT`/`DEAD`) |
+| POST | `/api/v1/admin/webhooks/{eventId}/retry` | `X-Admin-Key` | DEAD 이벤트 재전송 |
+
+`ADMIN_API_KEY`가 비어 있으면 admin 경로는 열리지 않는다.
+
+### 예약
+
+```http
+POST /api/v1/shipments
+X-Api-Key: <COURIER_API_KEY>
+Idempotency-Key: shipment-20261008-000001
+Content-Type: application/json
+
+{
+  "sender":   { "name": "김판매", "phone": "010-1111-2222", "address": "서울시 ..." },
+  "receiver": { "name": "이구매", "phone": "010-3333-4444", "address": "부산시 ..." },
+  "itemSummary": "몬스테라 외 1건"
+}
+```
+
+| 상황 | 응답 |
+|---|---|
+| 처음 보는 키 | `201`, 새 송장번호 |
+| 같은 키 + 같은 본문 (키 순서 무관) | `200`, 처음 발급한 송장 그대로 |
+| 같은 키 + 다른 본문 | `409 IDEMPOTENCY_KEY_REUSED` |
+| 키 없음 / 형식 틀림 (`^shipment-\d{8}-\d{6}$`) | `400 INVALID_IDEMPOTENCY_KEY` |
+| 필수값 누락 | `400 INVALID_FIELD_ERROR` |
+
+### 취소
+
+- `RESERVED` → `200`, `CANCELLED`
+- 이미 `CANCELLED` → `200` (멱등)
+- `PICKED_UP` 이후 → `409 SHIPMENT_NOT_CANCELLABLE`
+- 취소는 동기 응답으로 끝나며 웹훅을 보내지 않는다.
+
+### 에러 코드
+
+`BAD_REQUEST_DATA`, `INVALID_FIELD_ERROR`, `INVALID_IDEMPOTENCY_KEY`, `UNAUTHORIZED`, `RESOURCE_NOT_FOUND`,
+`SHIPMENT_NOT_FOUND`, `WEBHOOK_EVENT_NOT_FOUND`, `IDEMPOTENCY_KEY_REUSED`, `SHIPMENT_NOT_CANCELLABLE`,
+`INVALID_STATE_TRANSITION`, `WEBHOOK_EVENT_NOT_DEAD`, `INTERNAL_ERROR`
+
+## 웹훅 (택배사 → 서버)
+
+```http
+POST {WEBHOOK_URL}          ← 서버 수신 경로: /api/v1/webhooks/courier
+X-Api-Key: <WEBHOOK_API_KEY>
+Content-Type: application/json
+
+{
+  "eventId": "evt_6d071fa0-...",
+  "courierOrderNo": "shipment-20261008-000001",
+  "trackingNo": "404000000001",
+  "status": "PICKED_UP",
+  "occurredAt": "2026-10-08T15:03:00+09:00"
+}
+```
+
+- `PICKED_UP`, `IN_TRANSIT`, `DELIVERED`일 때만 보낸다. 본문은 `ApiResponse`로 감싸지 않는다.
+- 상태 전이와 outbox 적재는 같은 트랜잭션이라, 택배사가 죽어도 이벤트가 사라지지 않는다.
+- **배송 건별 FIFO**: 같은 배송 건의 앞 이벤트가 `SENT`가 되기 전에는 다음 이벤트를 보내지 않는다. 서버는 항상 순서대로 받는다.
+- 서버가 2xx를 주면 `SENT`.
+- 5xx, 408, 429, 타임아웃, 연결 실패는 재시도: 10초, 30초, 1분, 5분, 15분, 30분, 1시간 ×3. 최대 10회 시도 후 `DEAD`.
+- 그 밖의 4xx는 다시 보내도 같으므로 바로 `DEAD`.
+- `DEAD`면 그 배송 건의 뒤 이벤트도 멈춘다. admin 재전송으로 풀거나, 서버 polling으로 상태를 맞춘다.
+
+## 인증
+
+방향별로 키를 따로 쓴다. 한쪽 키가 새도 반대 방향은 안전하다. 운영과 개발은 다른 값을 쓴다.
+
+| 키 | 보내는 쪽 | 검증하는 쪽 |
+|---|---|---|
+| `COURIER_API_KEY` | 서버 | 택배사 |
+| `WEBHOOK_API_KEY` | 택배사 | 서버 |
+| `ADMIN_API_KEY` | 관리자/테스트 | 택배사 |
+
+## 서버(JustCommit) 쪽 구현 가이드
+
+1. `shipment` 행에 `courier_order_no`를 **먼저 저장한 뒤** 예약 API를 부른다. 응답의 `trackingNo`를 `tracking_no`에 저장한다.
+2. `tracking_no`가 비어 있는 행은 응답이 유실된 것이다. **같은 키로 다시 예약**하면 같은 송장이 돌아온다.
+3. 웹훅은 `courierOrderNo`로 행을 찾고, `eventId`로 중복을 무시하고, 현재보다 앞선 상태만 반영한다.
+4. 5분마다 `DELIVERED`/`CANCELLED`가 아닌 건을 `GET /api/v1/shipments/{trackingNo}`로 조회해 맞춘다. 웹훅 유실의 최종 안전망이다.
+5. `NNNNNN`은 서버 배송 ID를 쓰므로 키 생성에 별도 동시성 처리가 필요 없다.
+6. 주소 같은 필수값은 서버에서 막기로 했으므로 `failure_reason` 컬럼은 필요 없다. 택배사는 방어용으로만 `400`을 준다.
+
+## 구현
+
+- Node 24 + TypeScript + Express 5 + zod
+- DB: Node 내장 `node:sqlite` (네이티브 빌드 없음). 테이블 `shipments`, `webhook_outbox`
+- 워커 두 개가 같은 프로세스에서 돈다: 자동 진행(`PROGRESS_TICK_MS`), outbox 전송(`OUTBOX_TICK_MS`)
+- 배포: Oracle 서버에 Docker compose (app + Caddy HTTPS). SQLite 파일은 `courier-data` 볼륨
+
+## 나중에
+
+- 관리자 UI (배송 목록, 강제 진행, DEAD 재전송). 모두 admin API를 부르는 화면이면 된다.
+- 바코드: 송장번호를 Code128로 출력하고, 스캔하면 `advance`를 호출한다.
