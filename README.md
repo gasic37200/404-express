@@ -38,6 +38,24 @@ curl -X POST https://$DOMAIN/api/v1/shipments \
   -d '{"sender":{"name":"a","phone":"1","address":"x"},"receiver":{"name":"b","phone":"2","address":"y"},"itemSummary":"monstera"}'
 ```
 
+## 배송 취소
+
+```bash
+curl -X POST https://$DOMAIN/api/v1/shipments/{trackingNo}/cancel -H "X-Api-Key: $COURIER_API_KEY"
+```
+
+| 상황 | 응답 |
+| --- | --- |
+| 택배 예약(`RESERVED`) | 200, `CANCELLED`, `cancelledAt` 채움 |
+| 이미 취소됨 | 200, 같은 결과 (다시 보내도 안전) |
+| 수거(`PICKED_UP`) 이후 | 409 `SHIPMENT_NOT_CANCELLABLE` |
+| 없는 송장번호 | 404 `SHIPMENT_NOT_FOUND` |
+| 키 오류 | 401 `UNAUTHORIZED` |
+
+- 취소된 건은 자동 진행이 멈추고 웹훅을 보내지 않는다. 취소 자체도 웹훅 없이 응답으로 끝난다.
+- 취소된 건을 같은 `Idempotency-Key`로 다시 예약하면 새 건이 아니라 취소된 기존 건이 200으로 온다.
+- 취소와 자동 수거가 겹치면 먼저 처리된 쪽만 성공한다.
+
 ## 웹훅
 
 배송 상태가 `PICKED_UP`, `IN_TRANSIT`, `DELIVERED`로 바뀌면 `WEBHOOK_URL`(JustCommit `/api/v1/webhooks/courier`)로 이벤트를 보낸다. 본문과 헤더 계약은 [docs/design.md](docs/design.md#웹훅-택배사--서버)에 있다.

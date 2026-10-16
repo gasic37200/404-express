@@ -66,10 +66,20 @@ Content-Type: application/json
 
 ### 취소
 
-- `RESERVED` → `200`, `CANCELLED`
-- 이미 `CANCELLED` → `200` (멱등)
-- `PICKED_UP` 이후 → `409 SHIPMENT_NOT_CANCELLABLE`
-- 취소는 동기 응답으로 끝나며 웹훅을 보내지 않는다.
+`POST /api/v1/shipments/{trackingNo}/cancel` (본문 없음). 배송 건 전체만 취소한다.
+
+| 상황 | 응답 |
+|---|---|
+| `RESERVED` | `200`, `data.status = "CANCELLED"`, `data.cancelledAt` 채움 |
+| 이미 `CANCELLED` | `200`, 처음 취소와 같은 결과(`cancelledAt`도 처음 값). 타임아웃 뒤 다시 보내도 안전 |
+| `PICKED_UP` 이후 | `409 SHIPMENT_NOT_CANCELLABLE` |
+| 없는 송장번호 | `404 SHIPMENT_NOT_FOUND` |
+| `X-Api-Key` 오류 | `401 UNAUTHORIZED` |
+
+- 취소는 동기 응답으로 끝나며 CANCELLED 웹훅을 보내지 않는다.
+- 취소된 건은 자동 진행(수거 → 배송 중 → 완료)과 admin 진행(`409 INVALID_STATE_TRANSITION`)이 모두 멈추고, 새 웹훅도 생기지 않는다. 자동 진행은 배송 건마다 타이머를 잡지 않고 워커가 실행 시점에 상태를 다시 읽으므로, 취소 직전에 잡혀 있던 진행이 남지 않는다. 취소 전에 쌓여 재전송 대기 중이던 이벤트는 그대로 나갈 수 있다(서버가 무시한다).
+- 취소된 건을 같은 `Idempotency-Key`·같은 본문으로 다시 예약하면 새로 만들지 않고 취소된 기존 건을 `200`으로 돌려준다(`trackingNo` 포함, `status = "CANCELLED"`). 서버는 예약 응답이 유실된 READY 건을 취소할 때 이렇게 `trackingNo`를 얻은 뒤 취소한다.
+- 취소와 자동 수거가 겹치면 먼저 처리된 쪽만 성공한다. 둘 다 `BEGIN IMMEDIATE` 트랜잭션 안에서 상태를 다시 읽고 바꾸므로, 취소가 먼저면 수거되지 않고 수거가 먼저면 취소는 `409`다. 둘 다 성공하는 경우는 없다.
 
 ### 에러 코드
 
