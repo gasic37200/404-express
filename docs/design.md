@@ -145,7 +145,7 @@ JustCommit 수신부는 처리했거나 무시해도 되는 건(중복, 순서 �
 - Node 24 + TypeScript + Express 5 + zod
 - DB: Node 내장 `node:sqlite` (네이티브 빌드 없음). 테이블 `shipments`, `webhook_outbox`
 - 워커 두 개가 같은 프로세스에서 돈다: 자동 진행(`PROGRESS_TICK_MS`), outbox 전송(`OUTBOX_TICK_MS`)
-- 배포: Oracle 서버에 Docker compose (app + Caddy HTTPS). SQLite 파일은 `courier-data` 볼륨
+- 배포: 운영 EC2에 JustCommit과 함께 둔다. compose는 레포별로 분리(`docker-compose.prod.yml`)하고 외부 Docker 네트워크 `replant-net`으로만 통신한다. replant-net 별칭 `404-express`(JustCommit → `http://404-express:3000`), 웹훅은 `http://replant-app:8080/api/v1/webhooks/courier`, 포트 3000 비공개, Caddy 없음, `mem_limit` 128m. SQLite 파일은 `courier-data` 볼륨
 
 ## 나중에
 

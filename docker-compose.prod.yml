@@ -1,0 +1,30 @@
+# 운영 EC2용. JustCommit과 같은 EC2에서 외부 네트워크 replant-net으로만 연결한다.
+# 처음 한 번: docker network create replant-net
+# 실행: docker compose -f docker-compose.prod.yml up -d --build
+services:
+  404-express: # JustCommit이 http://404-express:3000 으로 부른다. 이름을 바꾸면 JustCommit COURIER_BASE_URL도 바꿔야 한다
+    build: .
+    image: 404-express:prod
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/courier.db
+      PORT: "3000"
+      # mem_limit 128m 안에서 V8 힙이 컨테이너 한도를 넘지 않게 묶는다
+      NODE_OPTIONS: --max-old-space-size=80
+    mem_limit: 128m
+    # ports를 열지 않는다. replant-net 안에서만 접근한다.
+    # Replant 쪽 서비스 이름과 겹치지 않도록 replant-net에서는 별칭 404-express로 찾게 한다
+    networks:
+      default: {}
+      replant-net:
+        aliases: [404-express]
+    volumes:
+      - courier-data:/data
+
+networks:
+  replant-net:
+    external: true
+
+volumes:
+  courier-data:

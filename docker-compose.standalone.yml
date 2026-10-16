@@ -1,3 +1,6 @@
+# 404-express만 공개 서버에 따로 띄울 때 쓴다 (Caddy가 80/443으로 HTTPS 공개).
+# 운영 EC2(Replant와 같은 서버)에서는 Nginx와 80/443이 충돌하므로 쓰지 않는다. 운영은 docker-compose.prod.yml.
+# 실행: docker compose -f docker-compose.standalone.yml up -d --build
 services:
   app:
     build: .

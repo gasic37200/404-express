@@ -4,12 +4,13 @@
 
 ## 확인 필요
 
-- **Oracle 서버 배포 정보**: 쓸 도메인, 80/443 포트 개방 여부(Oracle Cloud는 보안 목록과 OS 방화벽 둘 다 열어야 한다), Docker 설치 여부.
 - **courierOrderNo의 6자리 상한**: `NNNNNN`이 서버 배송 ID라서, 배송 ID가 999999를 넘으면 `^shipment-\d{8}-\d{6}$` 검사에 걸려 400이 난다. 데모 규모에서는 문제없다는 추정이며, 서버 쪽 키 생성 방식은 확인하지 않았다.
 - **SQLite 백업**: 운영 데이터는 `courier-data` 볼륨에만 있다. 백업 주기와 방법이 정해지지 않았다.
 
 ## 결정됨
 
+- **운영 웹훅 주소** (2026-10-16, Replant PR #165): Spring 컨테이너가 replant-net에 별칭 `replant-app`으로 참여한다. 운영 `.env`는 `WEBHOOK_URL=http://replant-app:8080/api/v1/webhooks/courier`.
+- **배포 위치** (2026-10-16): Oracle 단독 배포 대신 JustCommit과 같은 운영 EC2에 둔다(B안). compose는 레포별 분리, 외부 네트워크 `replant-net`, 서비스 이름 `404-express`, 포트 비공개.
 - **JustCommit 서버의 웹훅 수신 경로** (2026-10-13): `/api/v1/webhooks/courier`. design.md 웹훅 절과 `.env.example`에 반영했다.
 
 ## 에이전트 추정·임의 결정 (사용자 확인 전)
