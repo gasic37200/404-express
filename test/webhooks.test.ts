@@ -1,21 +1,30 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { advance, reserve } from '../src/shipments/service.js';
-import { dispatchDue, listEvents, MAX_ATTEMPTS, RETRY_BACKOFF_MS } from '../src/webhooks/outbox.js';
+import { DEFAULT_RETRY_DELAYS_MS, dispatchDue, listEvents } from '../src/webhooks/outbox.js';
 import { ADMIN_KEY, body, setup } from './helpers.js';
 
-type Reply = number | Error;
+type Reply = number | Error | Promise<number>;
 
 /** 응답을 차례로 돌려주는 가짜 fetch. 받은 요청도 기록한다. */
 function fakeFetch(replies: Reply[], fallback: Reply = 200) {
   const calls: { headers: Record<string, string>; body: any }[] = [];
   const fn = (async (_url: string, init: RequestInit) => {
     calls.push({ headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) });
-    const reply = replies.length ? replies.shift()! : fallback;
+    const reply = await (replies.length ? replies.shift()! : fallback);
     if (reply instanceof Error) throw reply;
     return new Response(null, { status: reply });
   }) as typeof fetch;
   return { fn, calls };
+}
+
+function silentLog() {
+  const lines: { level: 'warn' | 'error'; message: string }[] = [];
+  return {
+    lines,
+    warn: (message: string) => lines.push({ level: 'warn', message }),
+    error: (message: string) => lines.push({ level: 'error', message }),
+  };
 }
 
 function newShipment(env: ReturnType<typeof setup>, seq = 1) {
@@ -23,11 +32,25 @@ function newShipment(env: ReturnType<typeof setup>, seq = 1) {
   return reserve(env.db, key, body, env.clock()).shipment.trackingNo;
 }
 
-function deps(env: ReturnType<typeof setup>, fetch: typeof globalThis.fetch) {
-  return { db: env.db, clock: env.clock, webhookUrl: 'http://server/webhook', webhookApiKey: 'wh-key', timeoutMs: 1000, fetch };
+function deps(
+  env: ReturnType<typeof setup>,
+  fetch: typeof globalThis.fetch,
+  log = silentLog(),
+  retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
+) {
+  return {
+    db: env.db,
+    clock: env.clock,
+    webhookUrl: 'http://server/webhook',
+    webhookApiKey: 'wh-key',
+    timeoutMs: 1000,
+    retryDelaysMs,
+    fetch,
+    log,
+  };
 }
 
-describe('웹훅 outbox', () => {
+describe('웹훅 전송', () => {
   it('2xx면 SENT, 헤더와 본문 계약을 지킨다', async () => {
     const env = setup();
     const trackingNo = newShipment(env);
@@ -47,60 +70,64 @@ describe('웹훅 outbox', () => {
     expect(listEvents(env.db, 'SENT')).toHaveLength(1);
   });
 
-  it('배송 건별 FIFO: 앞 이벤트가 성공하기 전에는 다음 이벤트를 보내지 않는다', async () => {
+  it('기본 재전송 간격은 1분 → 5분 → 30분 → 2시간 → 6시간', () => {
+    expect(DEFAULT_RETRY_DELAYS_MS).toEqual([60, 300, 1800, 7200, 21600].map((s) => s * 1000));
+  });
+
+  it('5xx·연결 실패는 간격대로 재전송하고, 재전송 내용은 처음과 같다', async () => {
     const env = setup();
     const trackingNo = newShipment(env);
-    advance(env.db, trackingNo, env.clock()); // PICKED_UP
-    advance(env.db, trackingNo, env.clock()); // IN_TRANSIT
-    const { fn, calls } = fakeFetch([503]);
+    advance(env.db, trackingNo, env.clock());
+    const { fn, calls } = fakeFetch([503, new Error('ECONNREFUSED'), 200]);
+    const log = silentLog();
 
-    await dispatchDue(deps(env, fn)); // PICKED_UP 실패
-    await dispatchDue(deps(env, fn)); // 백오프 중: 아무것도 안 보냄
-    expect(calls.map((c) => c.body.status)).toEqual(['PICKED_UP']);
+    await dispatchDue(deps(env, fn, log)); // 1차 실패 → 1분 뒤
+    env.tick(59_000);
+    await dispatchDue(deps(env, fn, log)); // 아직 아님
+    expect(calls).toHaveLength(1);
+    env.tick(1_000);
+    await dispatchDue(deps(env, fn, log)); // 2차 실패 → 5분 뒤
+    env.tick(300_000);
+    await dispatchDue(deps(env, fn, log)); // 3차 성공
 
-    env.tick(RETRY_BACKOFF_MS[0]);
-    await dispatchDue(deps(env, fn)); // PICKED_UP 성공
-    await dispatchDue(deps(env, fn)); // 그다음 IN_TRANSIT
-    expect(calls.map((c) => c.body.status)).toEqual(['PICKED_UP', 'PICKED_UP', 'IN_TRANSIT']);
+    expect(calls).toHaveLength(3);
+    expect(calls[1].body).toEqual(calls[0].body);
+    expect(calls[2].body).toEqual(calls[0].body);
+    expect(listEvents(env.db, 'SENT')).toHaveLength(1);
+    expect(log.lines.filter((l) => l.level === 'warn')).toHaveLength(2);
   });
 
-  it('다른 배송 건은 서로 막지 않는다', async () => {
+  it.each([400, 401, 404, 408, 429])('4xx(%i)는 재전송하지 않고 error 로그를 남긴다', async (status) => {
     const env = setup();
-    const a = newShipment(env, 1);
-    const b = newShipment(env, 2);
-    advance(env.db, a, env.clock());
-    advance(env.db, b, env.clock());
-    const { fn, calls } = fakeFetch([500, 200]);
+    const trackingNo = newShipment(env);
+    advance(env.db, trackingNo, env.clock());
+    const { fn, calls } = fakeFetch([status]);
+    const log = silentLog();
 
-    await dispatchDue(deps(env, fn));
-    expect(calls.map((c) => c.body.trackingNo)).toEqual([a, b]);
+    await dispatchDue(deps(env, fn, log));
+    env.tick(DEFAULT_RETRY_DELAYS_MS.at(-1)! * 10);
+    await dispatchDue(deps(env, fn, log));
+
+    expect(calls).toHaveLength(1);
+    expect(listEvents(env.db, 'DEAD')[0].lastError).toBe(`HTTP ${status}`);
+    expect(log.lines.some((l) => l.level === 'error')).toBe(true);
   });
 
-  it('4xx는 바로 DEAD, 408/429와 네트워크 오류는 재시도', async () => {
-    const env = setup();
-    const ids = [1, 2, 3, 4].map((seq) => newShipment(env, seq));
-    ids.forEach((no) => advance(env.db, no, env.clock()));
-    const { fn } = fakeFetch([400, 408, 429, new Error('ECONNREFUSED')]);
-
-    await dispatchDue(deps(env, fn));
-
-    expect(listEvents(env.db, 'DEAD').map((e) => e.payload.trackingNo)).toEqual([ids[0]]);
-    expect(listEvents(env.db, 'PENDING')).toHaveLength(3);
-  });
-
-  it(`${MAX_ATTEMPTS}번 실패하면 DEAD, admin 재전송으로 다시 보낸다`, async () => {
+  it('처음 전송 + 재전송 5번이 모두 실패하면 실패 목록에 남기고, admin 재전송으로 다시 보낸다', async () => {
     const env = setup();
     const trackingNo = newShipment(env);
     advance(env.db, trackingNo, env.clock());
     const { fn, calls } = fakeFetch([], 500);
+    const log = silentLog();
 
-    for (let i = 0; i < MAX_ATTEMPTS; i++) {
-      await dispatchDue(deps(env, fn));
-      env.tick(RETRY_BACKOFF_MS[i] ?? 0);
+    for (let i = 0; i <= DEFAULT_RETRY_DELAYS_MS.length; i++) {
+      await dispatchDue(deps(env, fn, log));
+      env.tick(DEFAULT_RETRY_DELAYS_MS[i] ?? 0);
     }
-    expect(calls).toHaveLength(MAX_ATTEMPTS);
+    expect(calls).toHaveLength(6);
     const [dead] = listEvents(env.db, 'DEAD');
-    expect(dead.attempts).toBe(MAX_ATTEMPTS);
+    expect(dead.attempts).toBe(6);
+    expect(log.lines.filter((l) => l.level === 'error')).toHaveLength(1);
 
     const listed = await request(env.app).get('/api/v1/admin/webhooks?status=DEAD').set('X-Admin-Key', ADMIN_KEY);
     expect(listed.body.data).toHaveLength(1);
@@ -110,8 +137,55 @@ describe('웹훅 outbox', () => {
       .set('X-Admin-Key', ADMIN_KEY);
     expect(retried.body.data.status).toBe('PENDING');
 
-    await dispatchDue(deps(env, fakeFetch([200]).fn));
+    const again = fakeFetch([200]);
+    await dispatchDue(deps(env, again.fn, log));
+    expect(again.calls[0].body).toEqual(calls[0].body);
     expect(listEvents(env.db, 'SENT')).toHaveLength(1);
+  });
+
+  it('재전송 간격은 설정으로 바꿀 수 있다', async () => {
+    const env = setup();
+    const trackingNo = newShipment(env);
+    advance(env.db, trackingNo, env.clock());
+    const { fn, calls } = fakeFetch([500, 200]);
+    const fast = [5_000, 5_000];
+
+    await dispatchDue(deps(env, fn, silentLog(), fast));
+    env.tick(5_000);
+    await dispatchDue(deps(env, fn, silentLog(), fast));
+    expect(calls).toHaveLength(2);
+  });
+
+  it('같은 배송 건이라도 앞 이벤트의 재전송이 뒤 이벤트를 막지 않는다', async () => {
+    const env = setup();
+    const trackingNo = newShipment(env);
+    advance(env.db, trackingNo, env.clock()); // PICKED_UP
+    advance(env.db, trackingNo, env.clock()); // IN_TRANSIT
+    const { fn, calls } = fakeFetch([503, 200]);
+
+    await dispatchDue(deps(env, fn));
+
+    expect(calls.map((c) => c.body.status)).toEqual(['PICKED_UP', 'IN_TRANSIT']);
+    expect(listEvents(env.db, 'SENT').map((e) => e.payload.status)).toEqual(['IN_TRANSIT']);
+    expect(listEvents(env.db, 'PENDING').map((e) => e.payload.status)).toEqual(['PICKED_UP']);
+  });
+
+  it('응답이 느린 이벤트가 다른 이벤트 전송을 기다리게 하지 않는다', async () => {
+    const env = setup();
+    const a = newShipment(env, 1);
+    const b = newShipment(env, 2);
+    advance(env.db, a, env.clock());
+    advance(env.db, b, env.clock());
+    let release!: (status: number) => void;
+    const slow = new Promise<number>((resolve) => (release = resolve));
+    const { fn, calls } = fakeFetch([slow, 200]);
+
+    const run = dispatchDue(deps(env, fn));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toHaveLength(2); // 첫 응답을 기다리지 않고 두 번째도 이미 보냄
+    release(200);
+    await run;
+    expect(listEvents(env.db, 'SENT')).toHaveLength(2);
   });
 
   it('DEAD가 아닌 이벤트는 재전송할 수 없다', async () => {

@@ -35,6 +35,7 @@ export function startWorkers(db: Db, clock: Clock, config: Config): () => void {
         webhookUrl: config.webhookUrl,
         webhookApiKey: config.webhookApiKey,
         timeoutMs: config.webhookTimeoutMs,
+        retryDelaysMs: config.webhookRetryDelaysMs,
         log: console,
       }),
     ),

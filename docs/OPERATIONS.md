@@ -9,12 +9,21 @@
 | 설계 | 완료 (2026-10-08 사용자와 합의, design.md) |
 | 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행 |
 | 로컬 검증 | 완료 (아래 기록) |
-| 커밋·push | 미실행 |
+| 커밋·push | 첫 커밋 `03c1a12` push 완료 (2026-10-13) |
 | Oracle 배포 | 미실행 |
-| 운영 검증 (JustCommit 서버와 연동) | 미실행. 서버 쪽 `market/shipment`는 아직 `package-info.java`만 있다 (2026-10-08 확인) |
+| 운영 검증 (JustCommit 서버와 연동) | 미실행. 서버 쪽 예약 연동은 PR #103으로 머지됨, 웹훅 수신·재시도 스케줄러는 아직 없음 (2026-10-14 확인) |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
+
+### 2026-10-16 웹훅 재전송 규칙 변경
+
+- 재전송 간격 1분 → 5분 → 30분 → 2시간 → 6시간(최대 5번, `WEBHOOK_RETRY_DELAYS_SEC`로 변경 가능). 4xx는 모두 재전송하지 않는다(이전에는 408·429를 재전송). 배송 건별 FIFO를 없애고 이벤트별로 독립 재전송하며, 전송은 동시에 한다.
+- `npm run typecheck` 오류 없음, `npm test` 28개 통과.
+- 로컬 E2E (`npx tsx src/main.ts`, `WEBHOOK_RETRY_DELAYS_SEC=5,5,5,5,5`, 200/401을 주는 가짜 수신기):
+  - 수신기를 끈 채 진행 → `fetch failed` warn 로그 2번 → 수신기를 켜자 3번째 시도에서 같은 `eventId`·`occurredAt`으로 200, `SENT`.
+  - 잘못된 `WEBHOOK_API_KEY` → 401 한 번 받고 15초 동안 재전송 없음, error 로그 1줄, `DEAD`(attempts=1).
+- 실제 JustCommit 서버와의 확인은 미실행.
 
 ### 2026-10-13 메인 서버 1차 연동(JustCommit PR #103) 결정 반영
 
