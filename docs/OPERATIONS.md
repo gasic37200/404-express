@@ -7,14 +7,23 @@
 | 단계 | 상태 |
 | --- | --- |
 | 설계 | 완료 (2026-10-08 사용자와 합의, design.md) |
-| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행 |
+| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회) 완료, 주문번호 취소(②)·지점 표(③) 미착수 |
 | 로컬 검증 | 완료 (아래 기록) |
-| 커밋·push | `46a3296`까지 push 완료 (2026-10-16) |
-| 운영 배포 (EC2, `replant-net`) | 미실행. 준비 파일만 작성 (2026-10-16) |
+| 커밋·push | `cc0f59b`까지 push 완료 (2026-10-16) |
+| 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16) |
 | 운영 검증 (JustCommit 서버와 연동) | 미실행. 서버 쪽 예약 연동은 PR #103으로 머지됨, 웹훅 수신·재시도 스케줄러는 아직 없음 (2026-10-14 확인) |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
+
+### 2026-11-17 거리 시뮬레이션 ①단계 (replant Task C)
+
+- 시간 기반 진행(`PICKUP/IN_TRANSIT/DELIVERY_DELAY_SEC`)을 지우고 경로 계획 기반으로 바꿨다: 카카오 좌표 → 가장 가까운 우체국 → 하버사인 거리, 남은 거리는 저장하지 않고 계산.
+- 새 단계·웹훅: `NEAR_5KM`, `CANCEL_LOCKED`, `ARRIVED_ORIGIN`, `ARRIVED_DEST`, `OUT_FOR_DELIVERY` 추가. `IN_TRANSIT` 의미가 "수거 후 이동"에서 "간선 이동"으로 좁아졌다. 웹훅에 `remainingDistanceMeters`(해당 단계만)·`locationName` 추가. 주문번호 조회 추가.
+- DB 스키마가 바뀌었다(`plan_json`, `progress_origin_at`, `stage_times_json`). 예전 DB 파일이면 기동 때 오류로 멈춘다(개발 모드: 파일 삭제 후 재시작).
+- `npm run typecheck` 오류 없음, `npm test` 62개 통과(거리·시각표·경로 계획·카카오 가짜 응답 포함).
+- 로컬 E2E (`npx tsx src/main.ts`, `SPEED_MULTIPLIER=120`, 카카오 키·지점 표 없음 → 기본 거리): 예약 201 → `CANCEL_LOCKED`·`PICKED_UP`·`ARRIVED_ORIGIN`·`IN_TRANSIT`(30000)·`ARRIVED_DEST`·`OUT_FOR_DELIVERY`(5000)·`DELIVERED` 웹훅이 약 52초 동안 순서대로 도착, 주문번호 조회 200.
+- 실제 카카오 호출과 실제 우체국 지점 표는 미검증(③단계).
 
 ### 2026-10-16 운영 EC2 배포 준비 (JustCommit B안)
 

@@ -2,7 +2,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { advance, reserve } from '../src/shipments/service.js';
 import { DEFAULT_RETRY_DELAYS_MS, dispatchDue, listEvents } from '../src/webhooks/outbox.js';
-import { ADMIN_KEY, body, setup } from './helpers.js';
+import { ADMIN_KEY, body, PLAN, setup } from './helpers.js';
 
 type Reply = number | Error | Promise<number>;
 
@@ -29,7 +29,7 @@ function silentLog() {
 
 function newShipment(env: ReturnType<typeof setup>, seq = 1) {
   const key = `shipment-20261008-${String(seq).padStart(6, '0')}`;
-  return reserve(env.db, key, body, env.clock()).shipment.trackingNo;
+  return reserve(env.db, key, body, PLAN, env.clock()).shipment.trackingNo;
 }
 
 function deps(
@@ -63,8 +63,10 @@ describe('웹훅 전송', () => {
     expect(calls[0].body).toMatchObject({
       courierOrderNo: 'shipment-20261008-000001',
       trackingNo,
-      status: 'PICKED_UP',
+      status: 'NEAR_5KM',
       occurredAt: '2026-10-08T15:00:00+09:00',
+      remainingDistanceMeters: 5000,
+      locationName: '강남우체국',
     });
     expect(calls[0].body.eventId).toMatch(/^evt_/);
     expect(listEvents(env.db, 'SENT')).toHaveLength(1);
@@ -159,15 +161,32 @@ describe('웹훅 전송', () => {
   it('같은 배송 건이라도 앞 이벤트의 재전송이 뒤 이벤트를 막지 않는다', async () => {
     const env = setup();
     const trackingNo = newShipment(env);
-    advance(env.db, trackingNo, env.clock()); // PICKED_UP
-    advance(env.db, trackingNo, env.clock()); // IN_TRANSIT
+    advance(env.db, trackingNo, env.clock()); // NEAR_5KM
+    advance(env.db, trackingNo, env.clock()); // CANCEL_LOCKED
     const { fn, calls } = fakeFetch([503, 200]);
 
     await dispatchDue(deps(env, fn));
 
-    expect(calls.map((c) => c.body.status)).toEqual(['PICKED_UP', 'IN_TRANSIT']);
-    expect(listEvents(env.db, 'SENT').map((e) => e.payload.status)).toEqual(['IN_TRANSIT']);
-    expect(listEvents(env.db, 'PENDING').map((e) => e.payload.status)).toEqual(['PICKED_UP']);
+    expect(calls.map((c) => c.body.status)).toEqual(['NEAR_5KM', 'CANCEL_LOCKED']);
+    expect(listEvents(env.db, 'SENT').map((e) => e.payload.status)).toEqual(['CANCEL_LOCKED']);
+    expect(listEvents(env.db, 'PENDING').map((e) => e.payload.status)).toEqual(['NEAR_5KM']);
+  });
+
+  it('같은 배송 건의 이벤트는 한 번에 여러 개가 밀려 있어도 앞 응답을 받은 뒤 다음을 보낸다(순서 유지)', async () => {
+    const env = setup();
+    const trackingNo = newShipment(env);
+    advance(env.db, trackingNo, env.clock()); // NEAR_5KM
+    advance(env.db, trackingNo, env.clock()); // CANCEL_LOCKED
+    let release!: (status: number) => void;
+    const slow = new Promise<number>((resolve) => (release = resolve));
+    const { fn, calls } = fakeFetch([slow, 200]);
+
+    const run = dispatchDue(deps(env, fn));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.map((c) => c.body.status)).toEqual(['NEAR_5KM']); // 앞 응답 전에는 다음을 보내지 않음
+    release(200);
+    await run;
+    expect(calls.map((c) => c.body.status)).toEqual(['NEAR_5KM', 'CANCEL_LOCKED']);
   });
 
   it('응답이 느린 이벤트가 다른 이벤트 전송을 기다리게 하지 않는다', async () => {

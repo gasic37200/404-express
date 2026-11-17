@@ -5,18 +5,31 @@ JustCommit(식물 중고거래) 서버가 쓰는 **가짜 택배사**. 당근 �
 
 ## 상태
 
-| 코드 | UI 이름 | 설명 |
-|---|---|---|
-| `RESERVED` | 택배 예약 | 예약 완료, 송장 발급 (발송 전) |
-| `PICKED_UP` | 접수 완료 | 수거 완료 |
-| `IN_TRANSIT` | 배송 중 | 허브 이동 중 |
-| `DELIVERED` | 배송 완료 | 도착 |
-| `CANCELLED` | 접수 취소 | 수거 전에 취소됨 |
+| 코드 | 의미 | 웹훅 `remainingDistanceMeters` | `locationName` |
+|---|---|---|---|
+| `RESERVED` | 택배 예약(= 기사 배정), 송장 발급 | (웹훅 없음, 예약 응답) | 출발 지점 |
+| `NEAR_5KM` | 기사가 판매자 5km 안. 시작 거리가 5km를 넘을 때만 | `5000` | 출발 지점 |
+| `CANCEL_LOCKED` | 기사가 판매자 2km 안 = 취소 불가. 시작 거리가 2km 이하면 예약하자마자 | `min(시작 거리, 2000)` | 출발 지점 |
+| `PICKED_UP` | 수거(0m) | `0` | 출발 지점 |
+| `ARRIVED_ORIGIN` | 출발지 집하점 도착(기사가 지점으로 돌아옴) | 없음 | 출발 지점 |
+| `IN_TRANSIT` | 간선 출발(지점 ↔ 지점) | 간선 거리 | 출발 지점 |
+| `ARRIVED_DEST` | 도착지 집하점 도착 | 없음 | 도착 지점 |
+| `OUT_FOR_DELIVERY` | 배송 기사 배정 | 배송 거리 | 도착 지점 |
+| `DELIVERED` | 배송 완료 | `0` | 도착 지점 |
+| `CANCELLED` | 취소됨 | (아래 취소 참고) | - |
 
-- `RESERVED → PICKED_UP → IN_TRANSIT → DELIVERED` 순서로만 진행한다. 취소는 `RESERVED`에서만 된다.
-- 기본은 시간 기반 자동 진행이다: 수거 3분 / 배송 중 2분 / 배송 완료 2분 (`*_DELAY_SEC`).
+- 위 순서로만 진행한다. 단계마다 웹훅 1번. 스케줄러가 늦어 여러 단계를 지나쳐도 순서대로, 각 단계의 원래 도달 시각(`occurredAt`)으로 보낸다.
 - 택배 1건 = 서버의 판매자 주문(구매자·판매자 묶음) 1건. 택배사는 품목을 모른다.
   부분 취소는 서버 내부 일이고, 묶음 전체가 취소될 때만 서버가 취소 API를 부른다.
+
+### 거리 시뮬레이션
+
+- 예약 때 판매자·구매자 주소를 카카오 주소 검색으로 좌표로 바꾸고, 우체국 지점 표에서 각각 가장 가까운 지점을 찾는다.
+- 경로 계획(예약 때 한 번 정해 저장): 수거 거리 = 판매자 ↔ 출발 지점, 간선 거리 = 출발 지점 ↔ 도착 지점, 배송 거리 = 도착 지점 ↔ 구매자. 모두 직선 거리(하버사인).
+- 좌표 변환이나 지점 찾기에 실패하면 기본 거리(수거·배송 5km, 간선 30km)로 진행하고 지점 이름은 `null`이다. 예약은 막지 않는다.
+- 남은 거리는 저장하지 않고 계산한다: 수거 전 = `max(0, 수거 거리 − 속도 × 예약 후 지난 시간)`. 간선·배송 중도 같은 방식.
+- 시각표: 수거 = 수거 거리 ÷ 근거리 속도, 출발지 집하점 = 수거 + 같은 시간(돌아옴), 간선 출발 = + 집하 대기, 도착지 집하점 = + 간선 거리 ÷ 간선 속도, 배송 기사 배정 = + 집하 대기, 배송 완료 = + 배송 거리 ÷ 근거리 속도.
+- 속도·대기: 근거리 30km/h, 간선 80km/h, 집하 대기 30분. `SPEED_MULTIPLIER`로 모두 함께 빠르게 한다(예약 때 계획에 반영되므로 진행 중인 건은 설정을 바꿔도 그대로).
 
 ## 식별자
 
@@ -34,6 +47,7 @@ JustCommit(식물 중고거래) 서버가 쓰는 **가짜 택배사**. 당근 �
 |---|---|---|---|
 | POST | `/api/v1/shipments` | `X-Api-Key` | 예약 |
 | GET | `/api/v1/shipments/{trackingNo}` | `X-Api-Key` | 조회 (서버 polling용) |
+| GET | `/api/v1/shipments/by-order-no/{courierOrderNo}` | `X-Api-Key` | 주문번호로 조회 |
 | POST | `/api/v1/shipments/{trackingNo}/cancel` | `X-Api-Key` | 취소 |
 | POST | `/api/v1/admin/shipments/{trackingNo}/advance` | `X-Admin-Key` | 테스트용 한 칸 진행 |
 | GET | `/api/v1/admin/webhooks?status=DEAD` | `X-Admin-Key` | 웹훅 이벤트 목록 (`PENDING`/`SENT`/`DEAD`) |
@@ -64,15 +78,30 @@ Content-Type: application/json
 | 키 없음 / 형식 틀림 (`^shipment-\d{8}-\d{6}$`) | `400 INVALID_IDEMPOTENCY_KEY` |
 | 필수값 누락 | `400 INVALID_FIELD_ERROR` |
 
+- 처음 예약은 좌표 변환(카카오, 판매자·구매자 동시, 각 최대 `GEOCODE_TIMEOUT_MS`)만큼 늦어질 수 있다. 같은 키 재요청은 좌표 변환 없이 바로 돌려준다.
+
+### 조회
+
+`GET /api/v1/shipments/{trackingNo}`, `GET /api/v1/shipments/by-order-no/{courierOrderNo}`. 조회할 때 시각표를 따라잡으므로 스케줄러보다 늦지 않는다.
+
+| 필드 | 뜻 |
+|---|---|
+| `status` | 현재 단계 |
+| `remainingDistanceMeters` | 지금 이동 중인 구간의 남은 거리(m). 수거 전 = 판매자까지, 간선 중 = 도착 지점까지, 배송 중 = 구매자까지. 지점에 머무는 중이거나 끝난 건은 `null` |
+| `locationName` | 현재 단계의 지점 이름. 모르면 `null` |
+| `bookedAt`, `pickedUpAt`, `inTransitAt`, `deliveredAt`, `cancelledAt` | 각 단계에 도달한 시각. `inTransitAt`은 간선 출발 시각 |
+
 ### 취소
 
 `POST /api/v1/shipments/{trackingNo}/cancel` (본문 없음). 배송 건 전체만 취소한다.
 
 | 상황 | 응답 |
 |---|---|
-| `RESERVED` | `200`, `data.status = "CANCELLED"`, `data.cancelledAt` 채움 |
+| 수거 전(`RESERVED`·`NEAR_5KM`·`CANCEL_LOCKED`) | `200`, `data.status = "CANCELLED"`, `data.cancelledAt` 채움 |
 | 이미 `CANCELLED` | `200`, 처음 취소와 같은 결과(`cancelledAt`도 처음 값). 타임아웃 뒤 다시 보내도 안전 |
 | `PICKED_UP` 이후 | `409 SHIPMENT_NOT_CANCELLABLE` |
+
+송장번호 취소는 기존 계약을 유지한다(2km 잠금 규칙을 적용하지 않음). 2km 잠금과 유예는 주문번호 취소 API(다음 단계)에서 판정한다.
 | 없는 송장번호 | `404 SHIPMENT_NOT_FOUND` |
 | `X-Api-Key` 오류 | `401 UNAUTHORIZED` |
 
@@ -98,12 +127,16 @@ Content-Type: application/json
   "eventId": "evt_6d071fa0-...",
   "courierOrderNo": "shipment-20261008-000001",
   "trackingNo": "404000000001",
-  "status": "PICKED_UP",
-  "occurredAt": "2026-10-08T15:03:00+09:00"
+  "status": "NEAR_5KM",
+  "occurredAt": "2026-10-08T15:03:00+09:00",
+  "remainingDistanceMeters": 5000,
+  "locationName": "강남우체국"
 }
 ```
 
-- `PICKED_UP`, `IN_TRANSIT`, `DELIVERED`일 때만 보낸다. 본문은 `ApiResponse`로 감싸지 않는다.
+- `RESERVED` 다음 단계(`NEAR_5KM` ~ `DELIVERED`)마다 보낸다. 본문은 `ApiResponse`로 감싸지 않는다.
+- `remainingDistanceMeters`는 위 상태 표에서 값이 있는 단계에만 싣는다. `locationName`은 항상 싣고, 지점을 모르면 `null`.
+- `occurredAt`은 그 단계에 도달한 시각이다. 스케줄러가 늦게 반영해도 원래 시각을 쓴다.
 - 상태 전이와 outbox 적재는 같은 트랜잭션이라, 택배사가 죽어도 이벤트가 사라지지 않는다.
 
 ### 재전송 규칙
@@ -118,7 +151,8 @@ JustCommit 수신부는 처리했거나 무시해도 되는 건(중복, 순서 �
 
 - 재전송 간격: 1분 → 5분 → 30분 → 2시간 → 6시간. 처음 전송 1번 + 재전송 최대 5번이다. `WEBHOOK_RETRY_DELAYS_SEC`로 바꿀 수 있다(예: 로컬에서 `5,5,5,5,5`).
 - 재전송은 처음 저장한 내용을 그대로 보낸다. `eventId`, `occurredAt`이 같고 새 이벤트를 만들지 않는다.
-- 이벤트마다 재전송 시각을 따로 예약한다. 같은 배송 건이라도 앞 이벤트의 재전송이 뒤 이벤트를 막지 않으므로, 서버는 순서가 뒤바뀐 이벤트를 받을 수 있다. 전송은 동시에 하므로 응답이 느린 이벤트가 다른 이벤트를 기다리게 하지 않는다.
+- 이벤트마다 재전송 시각을 따로 예약한다. 같은 배송 건이라도 앞 이벤트의 재전송이 뒤 이벤트를 막지 않으므로, 서버는 순서가 뒤바뀐 이벤트를 받을 수 있다.
+- 한 번에 여러 단계가 밀렸을 때는 같은 배송 건의 이벤트를 앞 응답을 받은 뒤 다음 순서로 보낸다(정상일 때 도착 순서 유지). 다른 배송 건끼리는 동시에 보내므로 응답이 느린 건이 다른 건을 기다리게 하지 않는다.
 - 5번 재전송이 모두 실패하면 `DEAD`로 실패 목록(DB, 재시작해도 유지)에 남기고 error 로그를 찍는다. `GET /api/v1/admin/webhooks?status=DEAD`로 보고 `POST /api/v1/admin/webhooks/{eventId}/retry`로 다시 보낸다. 서버의 polling 대사가 최종 안전망이다.
 
 ## 인증
@@ -144,7 +178,9 @@ JustCommit 수신부는 처리했거나 무시해도 되는 건(중복, 순서 �
 
 - Node 24 + TypeScript + Express 5 + zod
 - DB: Node 내장 `node:sqlite` (네이티브 빌드 없음). 테이블 `shipments`, `webhook_outbox`
-- 워커 두 개가 같은 프로세스에서 돈다: 자동 진행(`PROGRESS_TICK_MS`), outbox 전송(`OUTBOX_TICK_MS`)
+- 워커 두 개가 같은 프로세스에서 돈다: 자동 진행(`PROGRESS_TICK_MS`, 경로 계획의 시각표 따라잡기), outbox 전송(`OUTBOX_TICK_MS`)
+- 거리: `src/routing/` (하버사인, 시각표, 경로 계획, 카카오 주소 검색, 지점 표 읽기)
+- admin 진행은 다음 단계가 지금 도달하도록 진행 기준 시각(`progress_origin_at`)을 당긴다. 이후 단계도 같은 간격으로 이어진다.
 - 배포: 운영 EC2에 JustCommit과 함께 둔다. compose는 레포별로 분리(`docker-compose.prod.yml`)하고 외부 Docker 네트워크 `replant-net`으로만 통신한다. replant-net 별칭 `404-express`(JustCommit → `http://404-express:3000`), 웹훅은 `http://replant-app:8080/api/v1/webhooks/courier`, 포트 3000 비공개, Caddy 없음, `mem_limit` 128m. SQLite 파일은 `courier-data` 볼륨
 
 ## 나중에

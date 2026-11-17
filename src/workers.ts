@@ -25,7 +25,7 @@ export function startWorkers(db: Db, clock: Clock, config: Config): () => void {
   const stops: (() => void)[] = [];
 
   if (config.autoProgress) {
-    stops.push(every(config.progressTickMs, () => advanceDue(db, config.delays, clock())));
+    stops.push(every(config.progressTickMs, () => advanceDue(db, clock())));
   }
   stops.push(
     every(config.outboxTickMs, () =>

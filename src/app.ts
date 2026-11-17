@@ -4,6 +4,7 @@ import type { Db } from './db.js';
 import { requireKey } from './http/auth.js';
 import { errorHandler, notFoundHandler } from './http/errors.js';
 import { ok } from './http/response.js';
+import type { Planner } from './routing/planner.js';
 import { adminShipmentRoutes, shipmentRoutes } from './shipments/routes.js';
 import type { Clock } from './time.js';
 import { adminWebhookRoutes } from './webhooks/routes.js';
@@ -11,10 +12,12 @@ import { adminWebhookRoutes } from './webhooks/routes.js';
 export interface AppDeps {
   db: Db;
   clock: Clock;
+  /** 예약 요청 → 경로 계획(좌표 변환·가까운 지점·거리) */
+  planner: Planner;
   config: Pick<Config, 'courierApiKey' | 'adminApiKey'>;
 }
 
-export function createApp({ db, clock, config }: AppDeps) {
+export function createApp({ db, clock, planner, config }: AppDeps) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '16kb' }));
@@ -23,7 +26,7 @@ export function createApp({ db, clock, config }: AppDeps) {
     res.json(ok('ok'));
   });
 
-  app.use('/api/v1/shipments', requireKey('X-Api-Key', config.courierApiKey), shipmentRoutes(db, clock));
+  app.use('/api/v1/shipments', requireKey('X-Api-Key', config.courierApiKey), shipmentRoutes(db, clock, planner));
 
   if (config.adminApiKey) {
     const admin = requireKey('X-Admin-Key', config.adminApiKey);

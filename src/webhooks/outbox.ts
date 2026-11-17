@@ -11,6 +11,18 @@ export interface WebhookPayload {
   trackingNo: string;
   status: string;
   occurredAt: string;
+  /** 거리에 의미가 있는 단계만 싣는다 */
+  remainingDistanceMeters?: number;
+  /** 지점 이름. 모르면 null */
+  locationName?: string | null;
+}
+
+export interface WebhookEvent {
+  status: string;
+  /** 단계에 실제로 도달한 시각(스케줄러가 늦게 반영해도 원래 시각) */
+  occurredAt: number;
+  remainingDistanceMeters?: number;
+  locationName?: string | null;
 }
 
 interface OutboxRow {
@@ -36,15 +48,17 @@ export const DEFAULT_RETRY_DELAYS_MS = [60, 300, 1800, 7200, 21600].map((s) => s
 export function enqueueWebhook(
   db: Db,
   shipment: { id: number; courierOrderNo: string; trackingNo: string },
-  status: string,
+  event: WebhookEvent,
   now: number,
 ): void {
   const payload: WebhookPayload = {
     eventId: `evt_${randomUUID()}`,
     courierOrderNo: shipment.courierOrderNo,
     trackingNo: shipment.trackingNo,
-    status,
-    occurredAt: toKst(now),
+    status: event.status,
+    occurredAt: toKst(event.occurredAt),
+    ...(event.remainingDistanceMeters !== undefined && { remainingDistanceMeters: event.remainingDistanceMeters }),
+    ...(event.locationName !== undefined && { locationName: event.locationName }),
   };
   db.prepare(
     `INSERT INTO webhook_outbox (event_id, shipment_id, payload_json, status, next_attempt_at, created_at)
@@ -85,8 +99,10 @@ async function send(deps: DispatcherDeps, payloadJson: string): Promise<SendResu
 
 /**
  * 재전송 시각이 된 PENDING 이벤트를 모두 보낸다. 이벤트마다 따로 예약되므로, 한 이벤트의 재전송이
- * 같은 배송 건의 다른 이벤트를 막지 않는다. 순서가 뒤바뀌어도 JustCommit이 "앞으로만 반영 + 중복 무시"로 처리한다.
- * 전송은 동시에 하므로 응답이 느린 이벤트가 다른 이벤트를 기다리게 하지 않는다.
+ * 같은 배송 건의 다른 이벤트를 막지 않는다(실패해도 다음 이벤트는 나간다). 순서가 뒤바뀌어도 JustCommit이
+ * "앞으로만 반영 + 중복 무시"로 처리한다.
+ * 다만 한 번에 여러 단계가 밀렸을 때 도착 순서가 섞이지 않도록, 같은 배송 건은 앞 응답을 받은 뒤 다음을 보낸다.
+ * 다른 배송 건끼리는 동시에 보내므로 응답이 느린 건이 다른 건을 기다리게 하지 않는다.
  */
 export async function dispatchDue(deps: DispatcherDeps): Promise<number> {
   const { db, clock } = deps;
@@ -94,11 +110,16 @@ export async function dispatchDue(deps: DispatcherDeps): Promise<number> {
     .prepare(`SELECT * FROM webhook_outbox WHERE status = 'PENDING' AND next_attempt_at <= ? ORDER BY id`)
     .all(clock()) as unknown as OutboxRow[];
 
+  const byShipment = new Map<number, OutboxRow[]>();
+  for (const row of due) byShipment.set(row.shipment_id, [...(byShipment.get(row.shipment_id) ?? []), row]);
+
   await Promise.all(
-    due.map(async (row) => {
-      // 재전송도 처음 저장한 payload_json을 그대로 보낸다(eventId, occurredAt 동일).
-      const result = await send(deps, row.payload_json);
-      record(deps, row, result);
+    [...byShipment.values()].map(async (rows) => {
+      for (const row of rows) {
+        // 재전송도 처음 저장한 payload_json을 그대로 보낸다(eventId, occurredAt 동일).
+        const result = await send(deps, row.payload_json);
+        record(deps, row, result);
+      }
     }),
   );
   return due.length;

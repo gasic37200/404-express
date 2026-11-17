@@ -2,12 +2,11 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { advanceDue, cancel } from '../src/shipments/service.js';
 import { listEvents } from '../src/webhooks/outbox.js';
-import { ADMIN_KEY, API_KEY, body, setup } from './helpers.js';
+import { ADMIN_KEY, API_KEY, AT, body, setup } from './helpers.js';
 
 // JustCommit 배송 취소(#161)가 기대는 계약
 const KEY = 'shipment-20261016-000001';
 const TRACKING = '404000000001';
-const DELAYS = { pickup: 180_000, inTransit: 120_000, delivery: 120_000 };
 
 type App = ReturnType<typeof setup>['app'];
 
@@ -43,7 +42,9 @@ describe('배송 취소 API', () => {
   it('PICKED_UP 이후 → 409 SHIPMENT_NOT_CANCELLABLE', async () => {
     const { app } = setup();
     await reserve(app);
-    await request(app).post(`/api/v1/admin/shipments/${TRACKING}/advance`).set('X-Admin-Key', ADMIN_KEY);
+    for (let i = 0; i < 3; i++) {
+      await request(app).post(`/api/v1/admin/shipments/${TRACKING}/advance`).set('X-Admin-Key', ADMIN_KEY); // NEAR_5KM → CANCEL_LOCKED → PICKED_UP
+    }
     const res = await cancelReq(app);
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('SHIPMENT_NOT_CANCELLABLE');
@@ -73,8 +74,8 @@ describe('취소된 건의 자동 진행과 웹훅', () => {
     await reserve(app);
     await cancelReq(app);
 
-    tick(DELAYS.pickup + 60_000); // 3분 넘게
-    expect(advanceDue(db, DELAYS, clock())).toBe(0);
+    tick(AT.DELIVERED); // 배송 완료 시각까지 지나도
+    expect(advanceDue(db, clock())).toBe(0);
     expect(listEvents(db)).toHaveLength(0);
     const found = await request(app).get(`/api/v1/shipments/${TRACKING}`).set('X-Api-Key', API_KEY);
     expect(found.body.data).toMatchObject({ status: 'CANCELLED', pickedUpAt: null });
@@ -104,23 +105,30 @@ describe('취소된 건을 같은 Idempotency-Key로 다시 예약', () => {
 });
 
 describe('취소와 자동 수거가 겹칠 때', () => {
-  it('취소가 먼저면 수거되지 않는다', async () => {
+  it('수거 직전에 취소하면 수거되지 않는다', async () => {
     const { app, db, clock, tick } = setup();
     await reserve(app);
-    tick(DELAYS.pickup); // 수거 시각 도달
-    cancel(db, TRACKING, clock()); // 같은 시각, 취소가 먼저 처리됨
-    expect(advanceDue(db, DELAYS, clock())).toBe(0);
-    expect(listEvents(db)).toHaveLength(0);
+    tick(AT.PICKED_UP - 1_000); // 잠금은 지났지만 아직 수거 전
+    expect((await cancelReq(app)).status).toBe(200); // 송장번호 취소는 수거 전이면 받는다(기존 계약)
+    tick(1_000);
+    expect(advanceDue(db, clock())).toBe(0);
+    expect(listEvents(db).map((e) => e.payload.status)).toEqual(['NEAR_5KM', 'CANCEL_LOCKED']);
   });
 
-  it('수거가 먼저면 취소는 409이고 상태는 PICKED_UP으로 남는다', async () => {
-    const { app, db, clock, tick } = setup();
+  it('수거 시각이 지난 뒤의 취소는 409이고 상태는 PICKED_UP으로 남는다', async () => {
+    const { app, tick } = setup();
     await reserve(app);
-    tick(DELAYS.pickup);
-    expect(advanceDue(db, DELAYS, clock())).toBe(1); // 수거가 먼저 처리됨
+    tick(AT.PICKED_UP); // 스케줄러가 돌기 전이어도 취소 판정 때 시각표를 따라잡는다
     const res = await cancelReq(app);
     expect(res.status).toBe(409);
     const found = await request(app).get(`/api/v1/shipments/${TRACKING}`).set('X-Api-Key', API_KEY);
     expect(found.body.data).toMatchObject({ status: 'PICKED_UP', cancelledAt: null });
+  });
+
+  it('cancel 함수도 같은 규칙을 따른다', async () => {
+    const env = setup();
+    await reserve(env.app);
+    env.tick(AT.PICKED_UP);
+    expect(() => cancel(env.db, TRACKING, env.clock())).toThrow('수거 이후에는 취소할 수 없습니다.');
   });
 });
