@@ -7,14 +7,23 @@
 | 단계 | 상태 |
 | --- | --- |
 | 설계 | 완료 (2026-10-08 사용자와 합의, design.md) |
-| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회) 완료, 주문번호 취소(②)·지점 표(③) 미착수 |
+| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송) 완료, 지점 표(③) 미착수 |
 | 로컬 검증 | 완료 (아래 기록) |
-| 커밋·push | `cc0f59b`까지 push 완료 (2026-10-16) |
+| 커밋·push | `d945942`까지 push 완료 (2026-11-17) |
 | 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16) |
 | 운영 검증 (JustCommit 서버와 연동) | 미실행. 서버 쪽 예약 연동은 PR #103으로 머지됨, 웹훅 수신·재시도 스케줄러는 아직 없음 (2026-10-14 확인) |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
+
+### 2026-11-17 주문번호 취소 ②단계 (replant Task C)
+
+- `POST /api/v1/shipments/byOrderNo/{courierOrderNo}/cancel` 추가. 누른 시각 기준 2km 판정 + 잠금 후 30초 유예(아직 수거 전일 때만), 첫 판정 저장(`order_cancellations`), 예약 전 취소 기록과 늦은 예약 `409 ORDER_ALREADY_CANCELLED`, 택배사 장애 반송(`RETURNING` → `RETURNED`), `CANCELLED` 웹훅.
+- 송장번호 취소 API(`POST /{trackingNo}/cancel`)를 없앴다(사용자 결정: market이 주문번호 취소로 옮기는 중). 이제 404. 송장번호 취소만 검증하던 `test/cancel.test.ts`는 지우고, 필요한 경우(취소 뒤 진행 멈춤·admin 진행 409·같은 키 재예약)는 `test/orderCancel.test.ts`로 옮겼다. 테스트는 71개.
+- 경로 camelCase 통일: ①단계에서 push한 `/by-order-no/`를 `/byOrderNo/`로 바꿈(JustCommit `docs/conventions/api-style.md`).
+- `npm run typecheck` 오류 없음, `npm test` 71개 통과(송장번호 취소 삭제 후).
+- 로컬 E2E (송장번호 취소 삭제 전 실행, `npx tsx src/main.ts`, `SPEED_MULTIPLIER=10`, 기본 거리): 예약 직후 취소 200 + `CANCELLED` 웹훅, 다시 취소 200, 예약 전 취소 200(`trackingNo` null) → 늦은 예약 409 `ORDER_ALREADY_CANCELLED`, 잠금+유예가 지난 뒤 취소 409 → 이른 시각으로 다시 보내도 409, 거절된 건은 `CANCEL_LOCKED`·`PICKED_UP` 웹훅으로 계속 진행.
+- 반송 흐름은 테스트로만 확인(실제 장애 재현은 미실행).
 
 ### 2026-11-17 거리 시뮬레이션 ①단계 (replant Task C)
 

@@ -1,5 +1,7 @@
 import { DEFAULT_RETRY_DELAYS_MS } from './webhooks/outbox.js';
 
+export const DEFAULT_CANCEL_GRACE_MS = 30_000;
+
 export interface Config {
   port: number;
   dbPath: string;
@@ -28,6 +30,8 @@ export interface Config {
   };
   progressTickMs: number;
   outboxTickMs: number;
+  /** 잠금(2km) 직후 이 시간 안에 누른 취소는 아직 수거 전이면 받아준다. 사람의 반응 시간이라 SPEED_MULTIPLIER와 무관 */
+  cancelGraceMs: number;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -86,5 +90,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     progressTickMs: int(env, 'PROGRESS_TICK_MS', 5000),
     outboxTickMs: int(env, 'OUTBOX_TICK_MS', 2000),
+    cancelGraceMs: int(env, 'CANCEL_GRACE_SEC', DEFAULT_CANCEL_GRACE_MS / 1000) * 1000,
   };
 }

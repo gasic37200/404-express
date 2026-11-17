@@ -22,6 +22,17 @@ CREATE TABLE IF NOT EXISTS shipments (
 );
 CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments (status);
 
+-- 주문번호 취소의 첫 판정. 같은 주문번호가 다시 오면 이 결과를 그대로 돌려준다.
+-- 예약 전에 온 취소도 여기 남아, 늦게 온 같은 주문번호 예약을 막는다.
+CREATE TABLE IF NOT EXISTS order_cancellations (
+  courier_order_no    TEXT    PRIMARY KEY,
+  result              TEXT    NOT NULL,      -- CANCELLED | REJECTED
+  is_returning        INTEGER NOT NULL,      -- 1이면 수거 뒤 취소 인정(반송). returning은 SQLite 예약어라 못 씀
+  cancel_requested_at INTEGER NOT NULL,      -- 판정에 쓴 시각(미래 값은 받은 시각으로 자름)
+  decided_at          INTEGER NOT NULL,
+  shipment_id         INTEGER REFERENCES shipments (id)
+);
+
 CREATE TABLE IF NOT EXISTS webhook_outbox (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id        TEXT    NOT NULL UNIQUE,

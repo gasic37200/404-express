@@ -4,19 +4,28 @@ import { BusinessError } from '../http/errors.js';
 import { created, ok } from '../http/response.js';
 import type { Planner } from '../routing/planner.js';
 import type { Clock } from '../time.js';
-import { COURIER_ORDER_NO_PATTERN, reserveRequestSchema } from './schema.js';
-import { advance, cancel, findExistingReservation, getShipment, getShipmentByOrderNo, reserve } from './service.js';
+import { COURIER_ORDER_NO_PATTERN, orderCancelRequestSchema, reserveRequestSchema } from './schema.js';
+import {
+  advance,
+  cancelByOrderNo,
+  findExistingReservation,
+  getShipment,
+  getShipmentByOrderNo,
+  reserve,
+} from './service.js';
 
-function parseReserveBody(body: unknown) {
-  const result = reserveRequestSchema.safeParse(body);
+function parseBody<T>(schema: { safeParse(body: unknown): { success: true; data: T } | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } } }, body: unknown): T {
+  const result = schema.safeParse(body ?? {});
   if (!result.success) {
     const issue = result.error.issues[0];
-    throw new BusinessError('INVALID_FIELD_ERROR', `${issue.path.join('.')}: ${issue.message}`);
+    throw new BusinessError('INVALID_FIELD_ERROR', `${issue.path.map(String).join('.')}: ${issue.message}`);
   }
   return result.data;
 }
 
-export function shipmentRoutes(db: Db, clock: Clock, planner: Planner): Router {
+const parseReserveBody = (body: unknown) => parseBody(reserveRequestSchema, body);
+
+export function shipmentRoutes(db: Db, clock: Clock, planner: Planner, cancelGraceMs: number): Router {
   const router = Router();
 
   router.post('/', async (req, res) => {
@@ -40,16 +49,22 @@ export function shipmentRoutes(db: Db, clock: Clock, planner: Planner): Router {
     }
   });
 
-  router.get('/by-order-no/:courierOrderNo', (req, res) => {
+  router.post('/byOrderNo/:courierOrderNo/cancel', (req, res) => {
+    const { courierOrderNo } = req.params;
+    if (!COURIER_ORDER_NO_PATTERN.test(courierOrderNo)) {
+      throw new BusinessError('INVALID_FIELD_ERROR', 'courierOrderNo: 형식이 올바르지 않습니다 (shipment-yyyyMMdd-NNNNNN)');
+    }
+    const { cancelRequestedAt } = parseBody(orderCancelRequestSchema, req.body);
+    const result = cancelByOrderNo(db, courierOrderNo, Date.parse(cancelRequestedAt), clock(), cancelGraceMs);
+    res.json(ok(result.returning ? '취소가 인정되어 반송합니다.' : '택배 접수가 취소되었습니다.', result));
+  });
+
+  router.get('/byOrderNo/:courierOrderNo', (req, res) => {
     res.json(ok('배송 조회에 성공했습니다.', getShipmentByOrderNo(db, req.params.courierOrderNo, clock())));
   });
 
   router.get('/:trackingNo', (req, res) => {
     res.json(ok('배송 조회에 성공했습니다.', getShipment(db, req.params.trackingNo, clock())));
-  });
-
-  router.post('/:trackingNo/cancel', (req, res) => {
-    res.json(ok('택배 접수가 취소되었습니다.', cancel(db, req.params.trackingNo, clock())));
   });
 
   return router;

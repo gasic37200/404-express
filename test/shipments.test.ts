@@ -74,26 +74,12 @@ describe('조회와 취소', () => {
     expect(missing.body.code).toBe('SHIPMENT_NOT_FOUND');
   });
 
-  it('RESERVED는 취소되고, 다시 취소해도 200 (웹훅 없음)', async () => {
-    const { app, db } = setup();
-    await reserve(app);
-    const first = await request(app).post('/api/v1/shipments/404000000001/cancel').set('X-Api-Key', API_KEY);
-    expect(first.status).toBe(200);
-    expect(first.body.data.status).toBe('CANCELLED');
-    const again = await request(app).post('/api/v1/shipments/404000000001/cancel').set('X-Api-Key', API_KEY);
-    expect(again.status).toBe(200);
-    expect(listEvents(db)).toHaveLength(0);
-  });
-
-  it('수거 이후 취소는 409', async () => {
+  it('송장번호 취소 API는 없앴다 (주문번호 취소만 있음)', async () => {
     const { app } = setup();
     await reserve(app);
-    for (let i = 0; i < 3; i++) {
-      await request(app).post('/api/v1/admin/shipments/404000000001/advance').set('X-Admin-Key', ADMIN_KEY); // NEAR_5KM → CANCEL_LOCKED → PICKED_UP
-    }
     const res = await request(app).post('/api/v1/shipments/404000000001/cancel').set('X-Api-Key', API_KEY);
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe('SHIPMENT_NOT_CANCELLABLE');
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('RESOURCE_NOT_FOUND');
   });
 });
 
@@ -178,12 +164,12 @@ describe('상태 진행', () => {
     const { app } = setup();
     await reserve(app);
     const res = await request(app)
-      .get('/api/v1/shipments/by-order-no/shipment-20261008-000001')
+      .get('/api/v1/shipments/byOrderNo/shipment-20261008-000001')
       .set('X-Api-Key', API_KEY);
     expect(res.status).toBe(200);
     expect(res.body.data.trackingNo).toBe('404000000001');
     const missing = await request(app)
-      .get('/api/v1/shipments/by-order-no/shipment-20261008-999999')
+      .get('/api/v1/shipments/byOrderNo/shipment-20261008-999999')
       .set('X-Api-Key', API_KEY);
     expect(missing.status).toBe(404);
   });
@@ -198,7 +184,10 @@ describe('상태 진행', () => {
   it('취소된 건은 자동 진행하지 않는다', async () => {
     const { app, db, clock, tick } = setup();
     await reserve(app);
-    await request(app).post('/api/v1/shipments/404000000001/cancel').set('X-Api-Key', API_KEY);
+    await request(app)
+      .post('/api/v1/shipments/byOrderNo/shipment-20261008-000001/cancel')
+      .set('X-Api-Key', API_KEY)
+      .send({ cancelRequestedAt: '2026-10-08T15:00:00+09:00' });
     tick(AT.DELIVERED);
     expect(advanceDue(db, clock())).toBe(0);
   });

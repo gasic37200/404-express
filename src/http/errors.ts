@@ -11,6 +11,7 @@ export const ErrorCode = {
   WEBHOOK_EVENT_NOT_FOUND: [404, '웹훅 이벤트를 찾을 수 없습니다.'],
   IDEMPOTENCY_KEY_REUSED: [409, '같은 Idempotency-Key로 다른 내용의 요청이 들어왔습니다.'],
   SHIPMENT_NOT_CANCELLABLE: [409, '수거 이후에는 취소할 수 없습니다.'],
+  ORDER_ALREADY_CANCELLED: [409, '이미 취소된 주문번호라 예약할 수 없습니다.'],
   INVALID_STATE_TRANSITION: [409, '더 이상 진행할 수 없는 상태입니다.'],
   WEBHOOK_EVENT_NOT_DEAD: [409, 'DEAD 상태인 이벤트만 재전송할 수 있습니다.'],
   INTERNAL_ERROR: [500, '서버 내부 오류가 발생했습니다.'],

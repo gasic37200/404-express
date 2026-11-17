@@ -2,9 +2,9 @@ import type { StageStatus } from '../routing/timeline.js';
 
 /**
  * 배송 상태. RESERVED(예약 = 기사 배정)에서 시작해 경로 계획의 단계를 앞으로만 지난다.
- * CANCELLED는 취소 API로만 간다.
+ * CANCELLED는 취소 API로만 간다. RETURNING → RETURNED는 택배사 장애로 수거 뒤에 취소가 인정된 반송이다.
  */
-export type ShipmentStatus = 'RESERVED' | StageStatus | 'CANCELLED';
+export type ShipmentStatus = 'RESERVED' | StageStatus | 'CANCELLED' | 'RETURNING' | 'RETURNED';
 
 /** 진행 순서. 앞으로만 간다. */
 export const PROGRESS_ORDER: readonly ShipmentStatus[] = [
@@ -19,9 +19,9 @@ export const PROGRESS_ORDER: readonly ShipmentStatus[] = [
   'DELIVERED', // 배송 완료
 ];
 
-export const TERMINAL_STATUSES: ReadonlySet<ShipmentStatus> = new Set(['DELIVERED', 'CANCELLED']);
+export const TERMINAL_STATUSES: ReadonlySet<ShipmentStatus> = new Set(['DELIVERED', 'CANCELLED', 'RETURNED']);
 
-/** 송장번호 취소(기존 계약)는 수거 전이면 받는다 */
+/** 수거 전 단계. 이 단계에서 취소가 인정되면 반송 없이 취소된다 */
 export const BEFORE_PICKUP: ReadonlySet<ShipmentStatus> = new Set(['RESERVED', 'NEAR_5KM', 'CANCEL_LOCKED']);
 
 export const orderOf = (status: ShipmentStatus) => PROGRESS_ORDER.indexOf(status);

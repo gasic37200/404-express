@@ -76,21 +76,23 @@ curl -X POST https://$DOMAIN/api/v1/shipments \
 
 ## 배송 취소
 
+주문번호와 구매자가 취소를 누른 시각으로 보낸다. 판정은 택배사가 한다.
+
 ```bash
-curl -X POST https://$DOMAIN/api/v1/shipments/{trackingNo}/cancel -H "X-Api-Key: $COURIER_API_KEY"
+curl -X POST https://$DOMAIN/api/v1/shipments/byOrderNo/{courierOrderNo}/cancel \
+  -H "X-Api-Key: $COURIER_API_KEY" -H "Content-Type: application/json" \
+  -d '{"cancelRequestedAt":"2026-11-17T15:00:00+09:00"}'
 ```
 
 | 상황 | 응답 |
 | --- | --- |
-| 택배 예약(`RESERVED`) | 200, `CANCELLED`, `cancelledAt` 채움 |
-| 이미 취소됨 | 200, 같은 결과 (다시 보내도 안전) |
-| 수거(`PICKED_UP`) 이후 | 409 `SHIPMENT_NOT_CANCELLABLE` |
-| 없는 송장번호 | 404 `SHIPMENT_NOT_FOUND` |
-| 키 오류 | 401 `UNAUTHORIZED` |
+| 누른 시각에 기사가 판매자 2km 밖 (또는 잠긴 뒤 30초 안 + 아직 수거 전) | 200 `CANCELLED`, `CANCELLED` 웹훅 |
+| 위와 같은데 택배사 장애로 이미 수거됨 | 200 `RETURNING`, `returning: true`, 이후 `RETURNED` 웹훅 (택배사 비용 반송) |
+| 그 밖 | 409 `SHIPMENT_NOT_CANCELLABLE` |
+| 예약 전 | 200 (`trackingNo: null`), 늦게 온 같은 주문번호 예약은 409 `ORDER_ALREADY_CANCELLED` |
 
-- 취소된 건은 자동 진행이 멈추고 웹훅을 보내지 않는다. 취소 자체도 웹훅 없이 응답으로 끝난다.
-- 취소된 건을 같은 `Idempotency-Key`로 다시 예약하면 새 건이 아니라 취소된 기존 건이 200으로 온다.
-- 취소와 자동 수거가 겹치면 먼저 처리된 쪽만 성공한다.
+- 같은 주문번호를 다시 보내면 첫 판정을 그대로 돌려준다.
+- 자세한 계약은 [docs/design.md](docs/design.md#주문번호-취소-2km-판정).
 
 ## 웹훅
 

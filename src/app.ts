@@ -1,5 +1,5 @@
 import express from 'express';
-import type { Config } from './config.js';
+import { DEFAULT_CANCEL_GRACE_MS, type Config } from './config.js';
 import type { Db } from './db.js';
 import { requireKey } from './http/auth.js';
 import { errorHandler, notFoundHandler } from './http/errors.js';
@@ -14,7 +14,7 @@ export interface AppDeps {
   clock: Clock;
   /** 예약 요청 → 경로 계획(좌표 변환·가까운 지점·거리) */
   planner: Planner;
-  config: Pick<Config, 'courierApiKey' | 'adminApiKey'>;
+  config: Pick<Config, 'courierApiKey' | 'adminApiKey'> & Partial<Pick<Config, 'cancelGraceMs'>>;
 }
 
 export function createApp({ db, clock, planner, config }: AppDeps) {
@@ -26,7 +26,7 @@ export function createApp({ db, clock, planner, config }: AppDeps) {
     res.json(ok('ok'));
   });
 
-  app.use('/api/v1/shipments', requireKey('X-Api-Key', config.courierApiKey), shipmentRoutes(db, clock, planner));
+  app.use('/api/v1/shipments', requireKey('X-Api-Key', config.courierApiKey), shipmentRoutes(db, clock, planner, config.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS));
 
   if (config.adminApiKey) {
     const admin = requireKey('X-Admin-Key', config.adminApiKey);

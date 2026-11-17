@@ -16,7 +16,9 @@ JustCommit(식물 중고거래) 서버가 쓰는 **가짜 택배사**. 당근 �
 | `ARRIVED_DEST` | 도착지 집하점 도착 | 없음 | 도착 지점 |
 | `OUT_FOR_DELIVERY` | 배송 기사 배정 | 배송 거리 | 도착 지점 |
 | `DELIVERED` | 배송 완료 | `0` | 도착 지점 |
-| `CANCELLED` | 취소됨 | (아래 취소 참고) | - |
+| `CANCELLED` | 취소됨 | 없음 | 없음 |
+| `RETURNING` | 반송 중: 판정상 취소가 맞는데 택배사 장애로 이미 수거된 건 | 없음 | 출발 지점 |
+| `RETURNED` | 반송 완료: 판매자에게 돌아감 | 없음 | 출발 지점 |
 
 - 위 순서로만 진행한다. 단계마다 웹훅 1번. 스케줄러가 늦어 여러 단계를 지나쳐도 순서대로, 각 단계의 원래 도달 시각(`occurredAt`)으로 보낸다.
 - 택배 1건 = 서버의 판매자 주문(구매자·판매자 묶음) 1건. 택배사는 품목을 모른다.
@@ -47,8 +49,8 @@ JustCommit(식물 중고거래) 서버가 쓰는 **가짜 택배사**. 당근 �
 |---|---|---|---|
 | POST | `/api/v1/shipments` | `X-Api-Key` | 예약 |
 | GET | `/api/v1/shipments/{trackingNo}` | `X-Api-Key` | 조회 (서버 polling용) |
-| GET | `/api/v1/shipments/by-order-no/{courierOrderNo}` | `X-Api-Key` | 주문번호로 조회 |
-| POST | `/api/v1/shipments/{trackingNo}/cancel` | `X-Api-Key` | 취소 |
+| GET | `/api/v1/shipments/byOrderNo/{courierOrderNo}` | `X-Api-Key` | 주문번호로 조회 |
+| POST | `/api/v1/shipments/byOrderNo/{courierOrderNo}/cancel` | `X-Api-Key` | 주문번호로 취소 (2km 판정) |
 | POST | `/api/v1/admin/shipments/{trackingNo}/advance` | `X-Admin-Key` | 테스트용 한 칸 진행 |
 | GET | `/api/v1/admin/webhooks?status=DEAD` | `X-Admin-Key` | 웹훅 이벤트 목록 (`PENDING`/`SENT`/`DEAD`) |
 | POST | `/api/v1/admin/webhooks/{eventId}/retry` | `X-Admin-Key` | DEAD 이벤트 재전송 |
@@ -82,39 +84,56 @@ Content-Type: application/json
 
 ### 조회
 
-`GET /api/v1/shipments/{trackingNo}`, `GET /api/v1/shipments/by-order-no/{courierOrderNo}`. 조회할 때 시각표를 따라잡으므로 스케줄러보다 늦지 않는다.
+`GET /api/v1/shipments/{trackingNo}`, `GET /api/v1/shipments/byOrderNo/{courierOrderNo}`. 조회할 때 시각표를 따라잡으므로 스케줄러보다 늦지 않는다.
 
 | 필드 | 뜻 |
 |---|---|
 | `status` | 현재 단계 |
 | `remainingDistanceMeters` | 지금 이동 중인 구간의 남은 거리(m). 수거 전 = 판매자까지, 간선 중 = 도착 지점까지, 배송 중 = 구매자까지. 지점에 머무는 중이거나 끝난 건은 `null` |
 | `locationName` | 현재 단계의 지점 이름. 모르면 `null` |
-| `bookedAt`, `pickedUpAt`, `inTransitAt`, `deliveredAt`, `cancelledAt` | 각 단계에 도달한 시각. `inTransitAt`은 간선 출발 시각 |
+| `bookedAt`, `pickedUpAt`, `inTransitAt`, `deliveredAt`, `cancelledAt`, `returnedAt` | 각 단계에 도달한 시각. `inTransitAt`은 간선 출발 시각 |
 
-### 취소
+### 주문번호 취소 (2km 판정)
 
-`POST /api/v1/shipments/{trackingNo}/cancel` (본문 없음). 배송 건 전체만 취소한다.
+`POST /api/v1/shipments/byOrderNo/{courierOrderNo}/cancel`. market의 취소 큐가 쓰는 API다. 배송 건 전체만 취소한다.
 
-| 상황 | 응답 |
-|---|---|
-| 수거 전(`RESERVED`·`NEAR_5KM`·`CANCEL_LOCKED`) | `200`, `data.status = "CANCELLED"`, `data.cancelledAt` 채움 |
-| 이미 `CANCELLED` | `200`, 처음 취소와 같은 결과(`cancelledAt`도 처음 값). 타임아웃 뒤 다시 보내도 안전 |
-| `PICKED_UP` 이후 | `409 SHIPMENT_NOT_CANCELLABLE` |
+```http
+POST /api/v1/shipments/byOrderNo/shipment-20261008-000001/cancel
+X-Api-Key: <COURIER_API_KEY>
+Content-Type: application/json
 
-송장번호 취소는 기존 계약을 유지한다(2km 잠금 규칙을 적용하지 않음). 2km 잠금과 유예는 주문번호 취소 API(다음 단계)에서 판정한다.
-| 없는 송장번호 | `404 SHIPMENT_NOT_FOUND` |
-| `X-Api-Key` 오류 | `401 UNAUTHORIZED` |
+{ "cancelRequestedAt": "2026-10-08T15:01:40+09:00" }
+```
 
-- 취소는 동기 응답으로 끝나며 CANCELLED 웹훅을 보내지 않는다.
-- 취소된 건은 자동 진행(수거 → 배송 중 → 완료)과 admin 진행(`409 INVALID_STATE_TRANSITION`)이 모두 멈추고, 새 웹훅도 생기지 않는다. 자동 진행은 배송 건마다 타이머를 잡지 않고 워커가 실행 시점에 상태를 다시 읽으므로, 취소 직전에 잡혀 있던 진행이 남지 않는다. 취소 전에 쌓여 재전송 대기 중이던 이벤트는 그대로 나갈 수 있다(서버가 무시한다).
-- 취소된 건을 같은 `Idempotency-Key`·같은 본문으로 다시 예약하면 새로 만들지 않고 취소된 기존 건을 `200`으로 돌려준다(`trackingNo` 포함, `status = "CANCELLED"`). 서버는 예약 응답이 유실된 READY 건을 취소할 때 이렇게 `trackingNo`를 얻은 뒤 취소한다.
-- 취소와 자동 수거가 겹치면 먼저 처리된 쪽만 성공한다. 둘 다 `BEGIN IMMEDIATE` 트랜잭션 안에서 상태를 다시 읽고 바꾸므로, 취소가 먼저면 수거되지 않고 수거가 먼저면 취소는 `409`다. 둘 다 성공하는 경우는 없다.
+- `cancelRequestedAt`: 구매자가 취소를 누른 시각. 시간대 표기 필수(없으면 `400 INVALID_FIELD_ERROR`). 택배사가 받은 시각보다 미래면 받은 시각으로 자른다.
+- 판정(누른 시각 기준): 기사가 판매자 2km 밖이었으면 취소. 2km 안이어도 **잠긴 뒤 30초(`CANCEL_GRACE_SEC`) 안에 눌렀고 지금 아직 수거 전**이면 취소. 그 밖은 `409 SHIPMENT_NOT_CANCELLABLE`.
+- 같은 주문번호를 다시 보내면 **첫 판정을 그대로** 돌려준다(200이든 409든, 두 번째 요청의 `cancelRequestedAt`은 보지 않음). 응답 유실 뒤 취소 큐가 재전송해도 안전하다.
+
+| 상황 | 응답 | 웹훅 |
+|---|---|---|
+| 판정 통과, 아직 수거 전 | `200`, `status = "CANCELLED"`, `returning = false` | `CANCELLED` |
+| 판정 통과, 지금은 이미 수거됨(택배사 장애로 요청 처리가 늦음) | `200`, `status = "RETURNING"`, `returning = true`. 택배사 비용으로 반송 | `CANCELLED` → `RETURNING` → (수거에 걸린 시간 뒤) `RETURNED` |
+| 판정 불통과 | `409 SHIPMENT_NOT_CANCELLABLE` | 없음. 배송은 계속 진행 |
+| 예약이 아직 없음 | `200`, `status = "CANCELLED"`, `trackingNo = null`. 취소 기록을 남긴다 | 없음 |
+| 주문번호 형식 틀림 / 본문 틀림 | `400 INVALID_FIELD_ERROR` | - |
+| `X-Api-Key` 오류 | `401 UNAUTHORIZED` | - |
+
+응답 `data`: `{ courierOrderNo, trackingNo, status, returning, cancelledAt, returnedAt }`.
+
+- 취소 결과는 응답만으로 충분하지만 `CANCELLED` 웹훅도 보낸다(2026-11-17 결정). market이 배송 내역(`shipment_tracking`)을 모든 단계에서 웹훅 하나로 쌓게 하려는 것이고, 같은 결과를 두 번 받아도 "앞으로만 반영 + 중복 무시"라 무해하다.
+
+- 예약 전 취소 기록이 있는 주문번호로 예약이 늦게 오면 `409 ORDER_ALREADY_CANCELLED`(배송 건을 만들지 않음).
+- 반송 중·반송 완료 건은 원래 단계(간선 등)로 진행하지 않는다.
+- 취소된 건은 자동 진행과 admin 진행(`409 INVALID_STATE_TRANSITION`)이 모두 멈추고, `CANCELLED` 뒤로 새 웹훅이 생기지 않는다. 자동 진행은 배송 건마다 타이머를 잡지 않고 워커가 실행 시점에 상태를 다시 읽으므로, 취소 직전에 잡혀 있던 진행이 남지 않는다.
+- 취소된 건을 같은 `Idempotency-Key`·같은 본문으로 다시 예약하면 새로 만들지 않고 취소된 기존 건을 `200`으로 돌려준다(`status = "CANCELLED"`).
+- 취소 판정과 자동 진행은 둘 다 `BEGIN IMMEDIATE` 트랜잭션 안에서 상태를 다시 읽고 바꾸므로, 동시에 일어나도 둘 다 성공하는 경우가 없다.
+- 송장번호 취소 API(`POST /api/v1/shipments/{trackingNo}/cancel`)는 2026-11-17에 없앴다(2km 판정을 하지 않아 정책과 어긋났다). 이제 `404 RESOURCE_NOT_FOUND`.
 
 ### 에러 코드
 
 `BAD_REQUEST_DATA`, `INVALID_FIELD_ERROR`, `INVALID_IDEMPOTENCY_KEY`, `UNAUTHORIZED`, `RESOURCE_NOT_FOUND`,
 `SHIPMENT_NOT_FOUND`, `WEBHOOK_EVENT_NOT_FOUND`, `IDEMPOTENCY_KEY_REUSED`, `SHIPMENT_NOT_CANCELLABLE`,
-`INVALID_STATE_TRANSITION`, `WEBHOOK_EVENT_NOT_DEAD`, `INTERNAL_ERROR`
+`ORDER_ALREADY_CANCELLED`, `INVALID_STATE_TRANSITION`, `WEBHOOK_EVENT_NOT_DEAD`, `INTERNAL_ERROR`
 
 ## 웹훅 (택배사 → 서버)
 
@@ -134,7 +153,7 @@ Content-Type: application/json
 }
 ```
 
-- `RESERVED` 다음 단계(`NEAR_5KM` ~ `DELIVERED`)마다 보낸다. 본문은 `ApiResponse`로 감싸지 않는다.
+- `RESERVED` 다음 단계(`NEAR_5KM` ~ `DELIVERED`)마다, 그리고 주문번호 취소가 확정되면 `CANCELLED`(반송이면 `RETURNING`, 이후 `RETURNED`)를 보낸다. 본문은 `ApiResponse`로 감싸지 않는다.
 - `remainingDistanceMeters`는 위 상태 표에서 값이 있는 단계에만 싣는다. `locationName`은 항상 싣고, 지점을 모르면 `null`.
 - `occurredAt`은 그 단계에 도달한 시각이다. 스케줄러가 늦게 반영해도 원래 시각을 쓴다.
 - 상태 전이와 outbox 적재는 같은 트랜잭션이라, 택배사가 죽어도 이벤트가 사라지지 않는다.
