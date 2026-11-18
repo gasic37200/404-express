@@ -89,7 +89,12 @@ jobs:
           mkdir -p "$HOME/404-express"
           cp docker-compose.prod.yml "$HOME/404-express/docker-compose.prod.yml"
           cd "$HOME/404-express"
-          test -f .env || { echo "::error::~/404-express/.env 가 없습니다 (.env.example 참고, 처음 올리기는 수동)"; exit 1; }
+          if [ ! -f .env ]; then
+            # 처음 올리기 전: compose가 env_file을 못 찾으므로 docker pull로 이미지만 받아 둔다
+            docker pull "$IMAGE:$IMAGE_TAG"
+            echo "::warning::~/404-express/.env 가 아직 없어 이미지만 받아 둠 (처음 올리기는 수동, .env.example 참고)"
+            exit 0
+          fi
           COMPOSE="docker compose -f docker-compose.prod.yml"
           $COMPOSE pull 404-express
           if [ -z "$($COMPOSE ps -a -q 404-express)" ]; then
