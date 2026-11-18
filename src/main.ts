@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { createApp } from './app.js';
+import { seedShippingFees } from './fees/service.js';
 import { loadConfig } from './config.js';
 import { openDb } from './db.js';
 import { loadBranches } from './routing/branches.js';
@@ -9,6 +11,8 @@ import { startWorkers } from './workers.js';
 
 const config = loadConfig();
 const db = openDb(config.dbPath);
+// 요금표가 비어 있으면 초기 파일을 버전 1로 넣는다(변경 웹훅도 나간다). 이미 있으면 그대로
+seedShippingFees(db, JSON.parse(readFileSync(config.shippingFeesPath, 'utf8')), systemClock());
 const { routing } = config;
 if (!routing.kakaoRestApiKey) console.warn('[routing] KAKAO_REST_API_KEY 없음, 모든 예약을 기본 거리로 진행');
 const planner = createPlanner({

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS order_cancellations (
 CREATE TABLE IF NOT EXISTS webhook_outbox (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id        TEXT    NOT NULL UNIQUE,
-  shipment_id     INTEGER NOT NULL REFERENCES shipments (id),
+  shipment_id     INTEGER REFERENCES shipments (id),  -- 요금표 변경처럼 배송 건이 없는 이벤트는 NULL
   payload_json    TEXT    NOT NULL,
   status          TEXT    NOT NULL,          -- PENDING | SENT | DEAD
   attempts        INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS webhook_outbox (
   created_at      INTEGER NOT NULL,
   sent_at         INTEGER
 );
+-- 배송비 요금표. 버전마다 한 행, 최신 버전만 API로 연다
+CREATE TABLE IF NOT EXISTS shipping_fee_versions (
+  version      INTEGER PRIMARY KEY,
+  table_json   TEXT    NOT NULL,   -- {baseFee, jejuSurcharge, remoteSurcharge, jejuZipcodes, remoteZipcodes}
+  content_hash TEXT    NOT NULL,   -- 같은 내용이면 버전을 올리지 않으려고
+  created_at   INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_outbox_shipment ON webhook_outbox (shipment_id, status, id);
 `;
 
@@ -57,13 +65,26 @@ function assertSchemaCompatible(db: Db): void {
   if (columns.length > 0 && !columns.some((c) => c.name === 'plan_json')) {
     throw new Error('DB 스키마가 예전 버전입니다(plan_json 없음). 개발 모드이므로 DB 파일을 지우고 다시 시작하세요.');
   }
+  // notnull은 SQLite 키워드라 따옴표로 감싸고 다른 이름으로 받는다
+  const outbox = db.prepare(`SELECT name, "notnull" AS required FROM pragma_table_info('webhook_outbox')`).all() as {
+    name: string;
+    required: number;
+  }[];
+  if (outbox.some((c) => c.name === 'shipment_id' && c.required === 1)) {
+    throw new Error('DB 스키마가 예전 버전입니다(webhook_outbox.shipment_id NOT NULL). 개발 모드이므로 DB 파일을 지우고 다시 시작하세요.');
+  }
 }
 
 export function openDb(path: string): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  assertSchemaCompatible(db);
+  try {
+    assertSchemaCompatible(db);
+  } catch (e) {
+    db.close(); // 열린 채로 던지면 파일이 잠겨(Windows) 지우고 다시 띄울 수 없다
+    throw e;
+  }
   db.exec(SCHEMA);
   return db;
 }

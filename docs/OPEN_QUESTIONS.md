@@ -5,11 +5,12 @@
 ## 확인 필요
 
 - **courierOrderNo의 6자리 상한**: `NNNNNN`이 서버 배송 ID라서, 배송 ID가 999999를 넘으면 `^shipment-\d{8}-\d{6}$` 검사에 걸려 400이 난다. 데모 규모에서는 문제없다는 추정이며, 서버 쪽 키 생성 방식은 확인하지 않았다.
-- **배송비 요금표 계약** (2026-11-17 발견, 거리 작업 뒤에 따로 정하기로 함): JustCommit `docs/services/market.md` 정책 표는 "지역 구분 요금(기본 + 제주·도서산간), 요금표는 market에 두고 404-express가 바꾸면 웹훅 → 버전 저장 + 버전 대사"라고 적혀 있지만, 404-express에는 요금표 API·웹훅 계약이 없다. market 코드(develop)는 아직 3,000원 고정(TODO).
+- **도서산간 우편번호 출처**: 특정 택배사 공식 표가 아니라 쇼핑몰 플랫폼들이 공통으로 쓰는 기준표다(2026-11-18 확인). 원문 `28826`을 `58826`의 오기로 보고 고쳤다(추정). 제주 섬은 추자도·우도만 넣었고 마라도·가파도 등은 확인하지 못했다.
 - **SQLite 백업**: 운영 데이터는 `courier-data` 볼륨에만 있다. 백업 주기와 방법이 정해지지 않았다.
 
 ## 결정됨
 
+- **배송비 요금표 계약** (2026-11-18): 기본 3,000원 + 지역 할증 하나(제주 +3,000, 도서산간 +5,000; 도서산간 → 제주 → 없음 순으로 판정, 크기별 기본 요금이 생겨도 할증을 더할 수 있게 할증으로 둠). 404-express가 요금표가 바뀔 때 `SHIPPING_FEES_CHANGED` 웹훅에 요금표 전체를 실어 보내고, `GET /api/v1/shippingFees`는 market 버전 대사용. 바꾸기는 `PUT /api/v1/admin/shippingFees`. design.md "배송비 요금표"에 반영.
 - **운영 웹훅 주소** (2026-10-16, Replant PR #165): Spring 컨테이너가 replant-net에 별칭 `replant-app`으로 참여한다. 운영 `.env`는 `WEBHOOK_URL=http://replant-app:8080/api/v1/webhooks/courier`.
 - **배포 위치** (2026-10-16): Oracle 단독 배포 대신 JustCommit과 같은 운영 EC2에 둔다(B안). compose는 레포별 분리, 외부 네트워크 `replant-net`, 서비스 이름 `404-express`, 포트 비공개.
 - **JustCommit 서버의 웹훅 수신 경로** (2026-10-13): `/api/v1/webhooks/courier`. design.md 웹훅 절과 `.env.example`에 반영했다.
