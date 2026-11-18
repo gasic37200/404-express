@@ -10,12 +10,18 @@
 | 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송)·③단계(우체국 지점 표) 완료. 배송비 요금표(조회·변경·웹훅) 완료 |
 | 로컬 검증 | 완료 (아래 기록) |
 | 커밋·push | `2b71518`까지 push 완료 (2026-11-18) |
-| 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16). 배포 때 `courier-data` 볼륨 삭제 필요(스키마 변경), 운영 `.env`에 `KAKAO_REST_API_KEY` 필요 |
+| 운영 배포 (replant 앱 서버 `10.0.7.76`) | 미실행. 주소를 MSA용으로 바꿈(2026-11-18, 아래 기록). 첫 기동은 서버에서 수동. 배포 때 `courier-data` 볼륨 삭제 필요(스키마 변경), 운영 `.env`에 `KAKAO_REST_API_KEY` 필요 |
 | CD (GitHub Actions) | `.github/workflows/cd.yml` 작성 (2026-11-18). main push → GHCR `ghcr.io/gasic37200/404-express` → 앱 서버 러너가 떠 있으면 갱신. 실제 실행 미확인 |
 | 운영 검증 (JustCommit 서버와 연동) | 미실행. market B1(PR #505)과 계약 비교는 일치(2026-11-18, 문서 대조만). market 요금표 수신부는 아직 없음 |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
+
+### 2026-11-18 MSA 앱 서버 주소 (JustCommit #525)
+
+- 사용자 결정: market(K3s 파드)은 Docker 네트워크 이름을 못 찾으므로 `replant-net`을 없애고 앱 서버 사설 IP에만 포트를 연다(`ports: "10.0.7.76:3000:3000"`). 웹훅은 Gateway NodePort `http://10.0.7.76:30080/api/v1/webhooks/courier`(위 CD 기록의 30083 안은 쓰지 않음).
+- 바꾼 파일: `docker-compose.prod.yml`(포트 · 네트워크 · 머리말), `.env.example`(웹훅 주소 · 키 짝), README 운영 배포 절, design.md 배포 줄, OPEN_QUESTIONS.
+- 서버 첫 기동 · 연동 검증은 아래 요약 표에 따로 적는다.
 
 ### 2026-11-18 CD 추가 (replant MSA 앱 서버)
 

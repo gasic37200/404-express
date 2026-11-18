@@ -1,10 +1,12 @@
-# 운영 EC2용. JustCommit과 같은 EC2에서 외부 네트워크 replant-net으로만 연결한다.
-# 처음 한 번: docker network create replant-net
+# 운영 replant MSA 앱 서버(사설 IP 10.0.7.76)용. market이 K3s 파드라 Docker 네트워크 이름으로는 못 찾으므로
+# 앱 서버 사설 IP의 3000에만 포트를 연다(인터넷 쪽은 열리지 않음, 보안 그룹도 3000을 막음).
+#   market → 404-express : COURIER_BASE_URL=http://10.0.7.76:3000
+#   404-express → 웹훅   : WEBHOOK_URL=http://10.0.7.76:30080/api/v1/webhooks/courier (Gateway NodePort)
 # 실행: docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
 #   이미지는 CD(.github/workflows/cd.yml)가 GHCR에 올린다. 특정 커밋으로: IMAGE_TAG=a1b2c3d docker compose ... up -d
 #   서버에서 직접 빌드하려면 up -d --build (build: . 를 쓴다)
 services:
-  404-express: # JustCommit이 http://404-express:3000 으로 부른다. 이름을 바꾸면 JustCommit COURIER_BASE_URL도 바꿔야 한다
+  404-express:
     build: .
     image: ghcr.io/gasic37200/404-express:${IMAGE_TAG:-latest}
     restart: unless-stopped
@@ -15,18 +17,11 @@ services:
       # mem_limit 128m 안에서 V8 힙이 컨테이너 한도를 넘지 않게 묶는다
       NODE_OPTIONS: --max-old-space-size=80
     mem_limit: 128m
-    # ports를 열지 않는다. replant-net 안에서만 접근한다.
-    # Replant 쪽 서비스 이름과 겹치지 않도록 replant-net에서는 별칭 404-express로 찾게 한다
-    networks:
-      default: {}
-      replant-net:
-        aliases: [404-express]
+    # 앱 서버 사설 IP에만 바인딩한다. 서버를 옮기면 이 IP와 JustCommit COURIER_BASE_URL을 함께 바꾼다
+    ports:
+      - "10.0.7.76:3000:3000"
     volumes:
       - courier-data:/data
-
-networks:
-  replant-net:
-    external: true
 
 volumes:
   courier-data:

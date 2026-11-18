@@ -49,7 +49,7 @@ JustCommit(식물 중고거래) 서버가 호출하는 가짜 택배사 API다. 
 ## 검증
 
 - 코드를 바꾸면 `npm run typecheck`와 `npm test`를 실행한다.
-- `Dockerfile`, `docker-compose*.yml`, `deploy/`를 바꾸면 `docker build`까지 확인한다. 운영 compose 서비스 이름 `404-express`와 네트워크 `replant-net`은 JustCommit 설정(`COURIER_BASE_URL`)과 맞물려 있으니 바꾸면 JustCommit 쪽 수정 필요로 보고한다. compose 검증에는 `.env`가 필요하므로 `.env.example`을 임시로 복사해 `docker compose config -q`를 실행하고 지운다.
+- `Dockerfile`, `docker-compose*.yml`, `deploy/`를 바꾸면 `docker build`까지 확인한다. 운영 compose의 포트 바인딩 `10.0.7.76:3000`은 JustCommit 설정(`COURIER_BASE_URL`, `deploy/scripts/make-env.sh`)과 맞물려 있으니 바꾸면 JustCommit 쪽 수정 필요로 보고한다. compose 검증에는 `.env`가 필요하므로 `.env.example`을 임시로 복사해 `docker compose config -q`를 실행하고 지운다.
 
 ## 비밀
 

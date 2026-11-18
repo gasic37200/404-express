@@ -16,6 +16,7 @@
 - **market 계약 비교** (2026-11-18, market B1 PR #505 세션): 취소 경로·필드·판정·상태값 일치, 404-express에 빠진 것 없음. 요금표 웹훅은 market 수신부가 없어 당분간 400 → DEAD(수신부 배포 뒤 admin 재전송 또는 market 09:30 대사로 맞춤).
 
 - **배송비 요금표 계약** (2026-11-18): 기본 3,000원 + 지역 할증 하나(제주 +3,000, 도서산간 +5,000; 도서산간 → 제주 → 없음 순으로 판정, 크기별 기본 요금이 생겨도 할증을 더할 수 있게 할증으로 둠). 404-express가 요금표가 바뀔 때 `SHIPPING_FEES_CHANGED` 웹훅에 요금표 전체를 실어 보내고, `GET /api/v1/shippingFees`는 market 버전 대사용. 바꾸기는 `PUT /api/v1/admin/shippingFees`. design.md "배송비 요금표"에 반영.
+- **MSA 앱 서버 주소** (2026-11-18, JustCommit #525, 사용자 결정): market이 K3s 파드라 `replant-net` 이름을 못 쓴다. 404-express는 앱 서버 사설 IP에만 3000 공개(`COURIER_BASE_URL=http://10.0.7.76:3000`), 웹훅은 Gateway NodePort `http://10.0.7.76:30080/api/v1/webhooks/courier`(JustCommit `external-apis.md`의 Gateway 공개 경로, market 30083은 내부 API용이라 쓰지 않음). 아래 10/16 두 항목(`replant-net` · `replant-app`)을 대체한다.
 - **운영 웹훅 주소** (2026-10-16, Replant PR #165): Spring 컨테이너가 replant-net에 별칭 `replant-app`으로 참여한다. 운영 `.env`는 `WEBHOOK_URL=http://replant-app:8080/api/v1/webhooks/courier`.
 - **배포 위치** (2026-10-16): Oracle 단독 배포 대신 JustCommit과 같은 운영 EC2에 둔다(B안). compose는 레포별 분리, 외부 네트워크 `replant-net`, 서비스 이름 `404-express`, 포트 비공개.
 - **JustCommit 서버의 웹훅 수신 경로** (2026-10-13): `/api/v1/webhooks/courier`. design.md 웹훅 절과 `.env.example`에 반영했다.

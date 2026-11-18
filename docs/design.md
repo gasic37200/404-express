@@ -251,7 +251,7 @@ JustCommit 수신부는 처리했거나 무시해도 되는 건(중복, 순서 �
 - 워커 두 개가 같은 프로세스에서 돈다: 자동 진행(`PROGRESS_TICK_MS`, 경로 계획의 시각표 따라잡기), outbox 전송(`OUTBOX_TICK_MS`)
 - 거리: `src/routing/` (하버사인, 시각표, 경로 계획, 카카오 주소 검색, 지점 표 읽기)
 - admin 진행은 다음 단계가 지금 도달하도록 진행 기준 시각(`progress_origin_at`)을 당긴다. 이후 단계도 같은 간격으로 이어진다.
-- 배포: 운영 EC2에 JustCommit과 함께 둔다. compose는 레포별로 분리(`docker-compose.prod.yml`)하고 외부 Docker 네트워크 `replant-net`으로만 통신한다. replant-net 별칭 `404-express`(JustCommit → `http://404-express:3000`), 웹훅은 `http://replant-app:8080/api/v1/webhooks/courier`, 포트 3000 비공개, Caddy 없음, `mem_limit` 128m. SQLite 파일은 `courier-data` 볼륨
+- 배포: replant MSA 앱 서버(사설 IP `10.0.7.76`)에 compose(`docker-compose.prod.yml`)로 따로 둔다. market(K3s 파드) → `http://10.0.7.76:3000`(사설 IP에만 포트 공개), 웹훅은 Gateway NodePort `http://10.0.7.76:30080/api/v1/webhooks/courier`, Caddy 없음, `mem_limit` 128m. SQLite 파일은 `courier-data` 볼륨
 
 ## 나중에
 

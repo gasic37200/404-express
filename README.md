@@ -18,32 +18,23 @@ npm run dev            # .env를 읽어서 watch 모드로 실행
 npm test
 ```
 
-## 운영 배포 (EC2, JustCommit과 같은 서버)
+## 운영 배포 (replant MSA 앱 서버)
 
-JustCommit과 같은 EC2에 두되 compose는 레포별로 따로 띄우고, 외부 Docker 네트워크 `replant-net`으로만 연결한다. 404-express는 포트를 공개하지 않는다.
+replant 앱 서버(사설 IP `10.0.7.76`)에 compose로 따로 띄운다. market은 K3s 파드라 Docker 네트워크 이름으로 404-express를 못 찾으므로, 앱 서버 사설 IP의 3000에만 포트를 연다. 인터넷 쪽에는 열리지 않는다(보안 그룹도 3000을 막음).
 
 | 방향 | 주소 |
 | --- | --- |
-| JustCommit → 404-express | `COURIER_BASE_URL=http://404-express:3000` (replant-net 별칭 `404-express`) |
-| 404-express → JustCommit 웹훅 | `WEBHOOK_URL=http://replant-app:8080/api/v1/webhooks/courier` (Replant Spring 컨테이너의 replant-net 별칭) |
+| JustCommit market → 404-express | `COURIER_BASE_URL=http://10.0.7.76:3000` |
+| 404-express → JustCommit 웹훅 | `WEBHOOK_URL=http://10.0.7.76:30080/api/v1/webhooks/courier` (Gateway NodePort → market) |
 
-1. 네트워크 만들기 (EC2에서 처음 한 번, JustCommit과 공유):
+이미지는 CD(`.github/workflows/cd.yml`)가 main push마다 GHCR에 올리고, 컨테이너가 이미 있으면 앱 서버 러너가 바꿔 띄운다. 처음 한 번은 서버에서 직접 띄운다.
 
-   ```bash
-   docker network create replant-net
-   ```
+1. `.env` 채우기 (`~/404-express/.env`): `.env.example`을 참고해 값을 넣는다. 필수는 `COURIER_API_KEY`, `WEBHOOK_API_KEY`, `WEBHOOK_URL`이고, 비어 있으면 기동하지 않는다. 두 키는 앱 서버 `~/secrets/market.env`와 같은 값이어야 한다. 키 값은 커밋 · 출력하지 않는다.
 
-2. `.env` 채우기: `.env.example`을 복사해 값을 넣는다. 필수는 `COURIER_API_KEY`, `WEBHOOK_API_KEY`, `WEBHOOK_URL`이고, 비어 있으면 기동하지 않는다. 두 키는 JustCommit `.env`와 같은 값이어야 한다. 키는 서버에서 직접 만들고 커밋하지 않는다.
+2. 띄우기:
 
    ```bash
-   cp .env.example .env
-   openssl rand -hex 32   # 키 만들기 (두 번 실행해 각각 사용)
-   ```
-
-3. 띄우기:
-
-   ```bash
-   docker compose -f docker-compose.prod.yml up -d --build
+   docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
    ```
 
 - 메모리 한도는 128MB다(`mem_limit`, V8 힙은 `NODE_OPTIONS=--max-old-space-size=80`). 로컬에서 띄웠을 때 약 28MB를 썼다.
@@ -55,8 +46,8 @@ JustCommit과 같은 EC2에 두되 compose는 레포별로 따로 띄우고, 외
 `GET /health`는 인증 없이 `200 {"status":200,"message":"ok"}`를 준다. 컨테이너 HEALTHCHECK도 이 경로를 쓴다.
 
 ```bash
-# EC2에서, replant-net 안의 다른 컨테이너 입장에서 연결 확인
-docker run --rm --network replant-net curlimages/curl -s http://404-express:3000/health
+# 앱 서버에서, market이 부르는 주소 그대로 확인
+curl -s http://10.0.7.76:3000/health
 ```
 
 ```bash
