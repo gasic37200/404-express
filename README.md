@@ -94,6 +94,20 @@ curl -X POST https://$DOMAIN/api/v1/shipments/byOrderNo/{courierOrderNo}/cancel 
 - 같은 주문번호를 다시 보내면 첫 판정을 그대로 돌려준다.
 - 자세한 계약은 [docs/design.md](docs/design.md#주문번호-취소-2km-판정).
 
+## 배송비 요금표
+
+기본 3,000원 + 지역 할증 하나(제주 +3,000원, 도서산간 +5,000원, 배송지 우편번호 기준). market이 받아 저장하고 직접 계산한다.
+
+- 초기 값은 `fees/shipping-fees.json`. 요금표가 비어 있을 때 기동하면 버전 1로 들어가고 `SHIPPING_FEES_CHANGED` 웹훅이 나간다.
+- 조회: `GET /api/v1/shippingFees` (`X-Api-Key`)
+- 바꾸기(버전 +1, 웹훅): 아래처럼 요금표 전체를 보낸다. 같은 내용이면 버전이 그대로다.
+
+```bash
+curl -X PUT https://$DOMAIN/api/v1/admin/shippingFees -H "X-Admin-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" -d @new-fees.json
+```
+
+자세한 계약은 [docs/design.md](docs/design.md#배송비-요금표).
+
 ## 웹훅
 
 배송 상태가 `PICKED_UP`, `IN_TRANSIT`, `DELIVERED`로 바뀌면 `WEBHOOK_URL`(JustCommit `/api/v1/webhooks/courier`)로 이벤트를 보낸다. 본문과 헤더 계약은 [docs/design.md](docs/design.md#웹훅-택배사--서버)에 있다.

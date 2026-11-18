@@ -5,16 +5,18 @@ import { toKst, type Clock } from '../time.js';
 
 export type OutboxStatus = 'PENDING' | 'SENT' | 'DEAD';
 
+/** 배송 이벤트는 courierOrderNo·trackingNo가 있고, 요금표 변경처럼 배송 건이 없는 이벤트는 없다 */
 export interface WebhookPayload {
   eventId: string;
-  courierOrderNo: string;
-  trackingNo: string;
   status: string;
   occurredAt: string;
+  courierOrderNo?: string;
+  trackingNo?: string;
   /** 거리에 의미가 있는 단계만 싣는다 */
   remainingDistanceMeters?: number;
   /** 지점 이름. 모르면 null */
   locationName?: string | null;
+  [field: string]: unknown;
 }
 
 export interface WebhookEvent {
@@ -28,7 +30,7 @@ export interface WebhookEvent {
 interface OutboxRow {
   id: number;
   event_id: string;
-  shipment_id: number;
+  shipment_id: number | null;
   payload_json: string;
   status: OutboxStatus;
   attempts: number;
@@ -51,7 +53,7 @@ export function enqueueWebhook(
   event: WebhookEvent,
   now: number,
 ): void {
-  const payload: WebhookPayload = {
+  insertEvent(db, shipment.id, {
     eventId: `evt_${randomUUID()}`,
     courierOrderNo: shipment.courierOrderNo,
     trackingNo: shipment.trackingNo,
@@ -59,11 +61,24 @@ export function enqueueWebhook(
     occurredAt: toKst(event.occurredAt),
     ...(event.remainingDistanceMeters !== undefined && { remainingDistanceMeters: event.remainingDistanceMeters }),
     ...(event.locationName !== undefined && { locationName: event.locationName }),
-  };
+  }, now);
+}
+
+/** 배송 건과 상관없는 웹훅(요금표 변경 등). 이것도 상태 변경과 같은 트랜잭션 안에서 부른다. */
+export function enqueueStandaloneWebhook(
+  db: Db,
+  event: { status: string; occurredAt: number; [field: string]: unknown },
+  now: number,
+): void {
+  const { status, occurredAt, ...rest } = event;
+  insertEvent(db, null, { eventId: `evt_${randomUUID()}`, status, occurredAt: toKst(occurredAt), ...rest }, now);
+}
+
+function insertEvent(db: Db, shipmentId: number | null, payload: WebhookPayload, now: number): void {
   db.prepare(
     `INSERT INTO webhook_outbox (event_id, shipment_id, payload_json, status, next_attempt_at, created_at)
      VALUES (?, ?, ?, 'PENDING', ?, ?)`,
-  ).run(payload.eventId, shipment.id, JSON.stringify(payload), now, now);
+  ).run(payload.eventId, shipmentId, JSON.stringify(payload), now, now);
 }
 
 export interface DispatcherDeps {
@@ -110,7 +125,8 @@ export async function dispatchDue(deps: DispatcherDeps): Promise<number> {
     .prepare(`SELECT * FROM webhook_outbox WHERE status = 'PENDING' AND next_attempt_at <= ? ORDER BY id`)
     .all(clock()) as unknown as OutboxRow[];
 
-  const byShipment = new Map<number, OutboxRow[]>();
+  // 배송 건이 없는 이벤트(요금표 변경)는 null 묶음으로, 그들끼리 순서대로 보낸다
+  const byShipment = new Map<number | null, OutboxRow[]>();
   for (const row of due) byShipment.set(row.shipment_id, [...(byShipment.get(row.shipment_id) ?? []), row]);
 
   await Promise.all(

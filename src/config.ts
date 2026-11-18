@@ -28,6 +28,8 @@ export interface Config {
     defaultLocalDistanceM: number;
     defaultLinehaulDistanceM: number;
   };
+  /** 초기 배송비 요금표(JSON). 요금표가 비어 있을 때만 버전 1로 넣는다 */
+  shippingFeesPath: string;
   progressTickMs: number;
   outboxTickMs: number;
   /** 잠금(2km) 직후 이 시간 안에 누른 취소는 아직 수거 전이면 받아준다. 사람의 반응 시간이라 SPEED_MULTIPLIER와 무관 */
@@ -88,6 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       defaultLocalDistanceM: int(env, 'DEFAULT_LOCAL_DISTANCE_M', 5000),
       defaultLinehaulDistanceM: int(env, 'DEFAULT_LINEHAUL_DISTANCE_M', 30000),
     },
+    shippingFeesPath: env.SHIPPING_FEES_PATH || './fees/shipping-fees.json',
     progressTickMs: int(env, 'PROGRESS_TICK_MS', 5000),
     outboxTickMs: int(env, 'OUTBOX_TICK_MS', 2000),
     cancelGraceMs: int(env, 'CANCEL_GRACE_SEC', DEFAULT_CANCEL_GRACE_MS / 1000) * 1000,

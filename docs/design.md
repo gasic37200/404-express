@@ -52,6 +52,8 @@ JustCommit(식물 중고거래) 서버가 쓰는 **가짜 택배사**. 당근 �
 | GET | `/api/v1/shipments/{trackingNo}` | `X-Api-Key` | 조회 (서버 polling용) |
 | GET | `/api/v1/shipments/byOrderNo/{courierOrderNo}` | `X-Api-Key` | 주문번호로 조회 |
 | POST | `/api/v1/shipments/byOrderNo/{courierOrderNo}/cancel` | `X-Api-Key` | 주문번호로 취소 (2km 판정) |
+| GET | `/api/v1/shippingFees` | `X-Api-Key` | 배송비 요금표 (최신 버전) |
+| PUT | `/api/v1/admin/shippingFees` | `X-Admin-Key` | 배송비 요금표 바꾸기 → 버전 올림 + 변경 웹훅 |
 | POST | `/api/v1/admin/shipments/{trackingNo}/advance` | `X-Admin-Key` | 테스트용 한 칸 진행 |
 | GET | `/api/v1/admin/webhooks?status=DEAD` | `X-Admin-Key` | 웹훅 이벤트 목록 (`PENDING`/`SENT`/`DEAD`) |
 | POST | `/api/v1/admin/webhooks/{eventId}/retry` | `X-Admin-Key` | DEAD 이벤트 재전송 |
@@ -130,6 +132,35 @@ Content-Type: application/json
 - 취소 판정과 자동 진행은 둘 다 `BEGIN IMMEDIATE` 트랜잭션 안에서 상태를 다시 읽고 바꾸므로, 동시에 일어나도 둘 다 성공하는 경우가 없다.
 - 송장번호 취소 API(`POST /api/v1/shipments/{trackingNo}/cancel`)는 2026-11-17에 없앴다(2km 판정을 하지 않아 정책과 어긋났다). 이제 `404 RESOURCE_NOT_FOUND`.
 
+### 배송비 요금표
+
+market이 받아 저장하고 배송지 우편번호로 직접 계산한다(JustCommit `docs/services/market.md` 정책: 지역 구분, 크기 무시, 판매자 주문 1건당 1번). 404-express는 요금표를 만들고 바뀔 때 웹훅으로 **요금표 전체**를 보낸다.
+
+```http
+GET /api/v1/shippingFees
+X-Api-Key: <COURIER_API_KEY>
+```
+
+```json
+{
+  "version": 2,
+  "updatedAt": "2026-11-18T10:00:00+09:00",
+  "baseFee": 3000,
+  "jejuSurcharge": 3000,
+  "remoteSurcharge": 5000,
+  "jejuZipcodes":   [{ "from": "63000", "to": "63644", "name": "제주특별자치도" }],
+  "remoteZipcodes": [{ "from": "40200", "to": "40240", "name": "경북 울릉도 전지역" }, "..."]
+}
+```
+
+- 계산: **배송비 = `baseFee` + 지역 할증 하나.** 배송지 우편번호(5자리)가 `remoteZipcodes` 구간 안이면 `remoteSurcharge`, 아니고 `jejuZipcodes` 안이면 `jejuSurcharge`, 아니면 0. 구간은 양끝 포함, 문자열 비교. 제주 안 섬(추자도·우도)은 도서산간 구간에 들어 있어 도서산간 할증 하나만 붙는다(3,000 + 5,000 = 8,000원, 제주 할증과 겹쳐 더하지 않음).
+- 할증으로 둔 이유(2026-11-18 사용자 결정): 지금은 크기·무게가 없어 기본 요금이 하나지만, 나중에 크기별 기본 요금이 생겨도 지역 할증은 그대로 더할 수 있게.
+- 초기 요금표: `fees/shipping-fees.json`(기본 3,000원, 제주 +3,000원, 도서산간 +5,000원 → 합계 3,000 / 6,000 / 8,000원). 요금표가 비어 있을 때 기동하면 버전 1로 넣고 변경 웹훅을 보낸다. 이미 있으면 재시작해도 그대로.
+- 도서산간 구간 출처: 쇼핑몰 플랫폼들이 공통으로 쓰는 「제주도 및 도서산간 지역 기준표」(2026-11-18 확인, 특정 택배사 공식 표 아님). 파일의 `source` 필드에 적어 두었고 API에는 싣지 않는다.
+- 바꾸기: `PUT /api/v1/admin/shippingFees`에 위 필드(`version`·`updatedAt` 제외)를 보낸다. 내용이 바뀌면 버전 +1, 이력 저장, 변경 웹훅. 지금과 같은 내용이면 버전을 올리지 않고 웹훅도 없다. 형식 오류(음수·소수 금액, 5자리 아닌 우편번호, from > to)는 `400 INVALID_FIELD_ERROR`.
+- 요금표가 아직 없으면 `GET`은 `404 RESOURCE_NOT_FOUND`(기동 때 넣으므로 정상 운영에서는 없음).
+- 예전 버전은 DB에 남지만 API로는 최신만 연다. market이 받을 때마다 버전과 함께 저장한다.
+
 ### 에러 코드
 
 `BAD_REQUEST_DATA`, `INVALID_FIELD_ERROR`, `INVALID_IDEMPOTENCY_KEY`, `UNAUTHORIZED`, `RESOURCE_NOT_FOUND`,
@@ -158,6 +189,25 @@ Content-Type: application/json
 - `remainingDistanceMeters`는 위 상태 표에서 값이 있는 단계에만 싣는다. `locationName`은 항상 싣고, 지점을 모르면 `null`.
 - `occurredAt`은 그 단계에 도달한 시각이다. 스케줄러가 늦게 반영해도 원래 시각을 쓴다.
 - 상태 전이와 outbox 적재는 같은 트랜잭션이라, 택배사가 죽어도 이벤트가 사라지지 않는다.
+
+### 요금표 변경 웹훅
+
+같은 주소·헤더로 보낸다. 배송 건이 없으므로 `courierOrderNo`·`trackingNo`가 없고, `status`로 구분한다. 나머지는 `GET /api/v1/shippingFees`의 `data`와 같다.
+
+```json
+{
+  "eventId": "evt_...",
+  "status": "SHIPPING_FEES_CHANGED",
+  "occurredAt": "2026-11-18T10:00:00+09:00",
+  "version": 2,
+  "updatedAt": "2026-11-18T10:00:00+09:00",
+  "baseFee": 3000, "jejuSurcharge": 3000, "remoteSurcharge": 5000,
+  "jejuZipcodes": [...], "remoteZipcodes": [...]
+}
+```
+
+- market은 받은 요금표를 버전과 함께 저장한다. 버전이 지금 것보다 작거나 같으면 무시한다(재전송·순서 꼬임).
+- 웹훅이 끝내 실패해도 market의 매일 09:30 버전 대사가 `GET`으로 맞춘다.
 
 ### 재전송 규칙
 

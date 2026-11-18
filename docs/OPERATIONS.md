@@ -7,12 +7,12 @@
 | 단계 | 상태 |
 | --- | --- |
 | 설계 | 완료 (2026-10-08 사용자와 합의, design.md) |
-| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송)·③단계(우체국 지점 표) 완료 |
+| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송)·③단계(우체국 지점 표) 완료. 배송비 요금표(조회·변경·웹훅) 완료 |
 | 로컬 검증 | 완료 (아래 기록) |
-| 커밋·push | `76946ba`까지 push 완료 (2026-11-17) |
-| 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16) |
+| 커밋·push | `2b71518`까지 push 완료 (2026-11-18) |
+| 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16). 배포 때 `courier-data` 볼륨 삭제 필요(스키마 변경), 운영 `.env`에 `KAKAO_REST_API_KEY` 필요 |
 | CD (GitHub Actions) | `.github/workflows/cd.yml` 작성 (2026-11-18). main push → GHCR `ghcr.io/gasic37200/404-express` → 앱 서버 러너가 떠 있으면 갱신. 실제 실행 미확인 |
-| 운영 검증 (JustCommit 서버와 연동) | 미실행. 서버 쪽 예약 연동은 PR #103으로 머지됨, 웹훅 수신·재시도 스케줄러는 아직 없음 (2026-10-14 확인) |
+| 운영 검증 (JustCommit 서버와 연동) | 미실행. market B1(PR #505)과 계약 비교는 일치(2026-11-18, 문서 대조만). market 요금표 수신부는 아직 없음 |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
@@ -22,8 +22,15 @@
 - 사용자 결정: 이미지는 GHCR(공개 패키지)에서 받고, 서버에서 빌드하지 않는다. 배포는 앱 서버 self-hosted 러너(라벨 `replant-app`, SSH · AWS 키 미사용).
 - `cd.yml`: build(typecheck · test · 이미지 push `:{커밋7}` + `latest`) → deploy(레포 변수 `CD_DEPLOY=true`일 때만). 서버 `~/404-express`에 compose 파일을 매번 복사하고 `.env`는 서버에만. 컨테이너가 없으면 이미지만 받아 둔다(처음 올리기는 수동).
 - `docker-compose.prod.yml`: `image`를 `ghcr.io/gasic37200/404-express:${IMAGE_TAG:-latest}`로. `build: .`는 남겨 서버 직접 빌드도 가능.
-- 로컬 확인: `npm run typecheck` 통과, `npm test` 81개 통과, 임시 `.env`로 `docker compose config`에서 `image` 치환 확인(`IMAGE_TAG=abc1234`), `docker build` 성공. 워크플로 실제 실행 · 서버 배포는 미실행.
+- 로컬 확인: `npm run typecheck` 통과, `npm test` 101개 통과(배송비 요금표 머지 뒤 재확인), 임시 `.env`로 `docker compose config`에서 `image` 치환 확인(`IMAGE_TAG=abc1234`), `docker build` 성공. 워크플로 실제 실행 · 서버 배포는 미실행.
 - 남은 것 (JustCommit 쪽 확인 필요): MSA 앱 서버에서는 market이 K3s 파드라 Docker 네트워크 `replant-net` 이름으로 404-express를 못 찾는다. 처음 올릴 때 사설 IP 포트 공개(예: `10.0.7.76:3000`)와 웹훅 주소(`replant-app:8080` → market NodePort `10.0.7.76:30083`)를 정해야 한다.
+### 2026-11-18 배송비 요금표
+
+- `GET /api/v1/shippingFees`, `PUT /api/v1/admin/shippingFees`, `SHIPPING_FEES_CHANGED` 웹훅(요금표 전체) 추가. 초기 요금표 `fees/shipping-fees.json`(기본 3,000 + 제주 +3,000 / 도서산간 +5,000 할증, 도서산간 31구간)을 비어 있을 때만 버전 1로 넣는다.
+- DB: `shipping_fee_versions` 추가, `webhook_outbox.shipment_id`를 NULL 허용으로 바꿨다(배송 건 없는 웹훅). 예전 DB 파일이면 기동 때 멈춘다. 이때 `openDb`가 파일을 닫지 않고 던져 Windows에서 파일이 잠기던 버그를 테스트로 찾아 고쳤다.
+- `npm run typecheck` 오류 없음, `npm test` 101개 통과(총액 필드를 할증 필드로 바꾼 뒤). E2E는 총액 필드일 때 실행했다.
+- 로컬 E2E(`npx tsx src/main.ts`, 가짜 수신기): 기동 → GET v1(제주 1구간·도서산간 31구간) + v1 웹훅, PUT 제주 변경 → v2 + v2 웹훅(요금표 전체, `courierOrderNo` 없음), 같은 내용 PUT → v2 그대로·웹훅 없음, 재시작 → v2 유지.
+- `docker build` 후 이미지 안 `fees/shipping-fees.json` 확인. 운영 배포는 미실행.
 
 ### 2026-11-17 우체국 지점 표 ③단계 (replant Task C)
 
