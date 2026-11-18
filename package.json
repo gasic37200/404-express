@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "branches:build": "tsx --env-file=.env scripts/build-branches.ts"
   },
   "repository": {
     "type": "git",

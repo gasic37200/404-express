@@ -13,6 +13,8 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+# 우체국 지점 표(npm run branches:build로 만든 것). 기본 경로 ./branches/branches.json
+COPY branches ./branches
 # named volume은 처음 만들 때 이 소유권을 물려받는다
 RUN mkdir -p /data && chown node:node /data
 VOLUME /data

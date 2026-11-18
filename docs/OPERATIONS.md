@@ -7,14 +7,22 @@
 | 단계 | 상태 |
 | --- | --- |
 | 설계 | 완료 (2026-10-08 사용자와 합의, design.md) |
-| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송) 완료, 지점 표(③) 미착수 |
+| 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송)·③단계(우체국 지점 표) 완료 |
 | 로컬 검증 | 완료 (아래 기록) |
-| 커밋·push | `d945942`까지 push 완료 (2026-11-17) |
+| 커밋·push | `76946ba`까지 push 완료 (2026-11-17) |
 | 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16) |
 | 운영 검증 (JustCommit 서버와 연동) | 미실행. 서버 쪽 예약 연동은 PR #103으로 머지됨, 웹훅 수신·재시도 스케줄러는 아직 없음 (2026-10-14 확인) |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
+
+### 2026-11-17 우체국 지점 표 ③단계 (replant Task C)
+
+- `npm run branches:build`(`scripts/build-branches.ts`, 로직 `src/routing/branchTable.ts`) 추가: CSV(따옴표·주소 안 쉼표 처리) → 총괄국 선택 → 카카오 좌표(괄호 참고 항목·건물명 줄여 재시도, `data/geocode-cache.json`으로 이어서 실행) → `branches/branches.json`. Dockerfile이 이 파일을 이미지에 넣는다.
+- 실제 변환: 총괄국 248곳 모두 좌표 찾음(실패 0). 한국 범위 밖 좌표 0, 겹치는 좌표 0. 예: 서울중앙우체국 37.5616, 126.9822.
+- 실제 카카오 키로 로컬 E2E(`SPEED_MULTIPLIER=60`): 서울시청 판매자 → 광화문우체국·남은 거리 386m(2km 안이라 예약 즉시 `CANCEL_LOCKED`), 강남 → 서울서초우체국 3,353m, 제주 → 제주우체국 8,286m, 없는 주소 → 기본 5,000m·지점 `null`. 첫 예약은 좌표 변환 때문에 약 450ms, 이후 약 60ms. 앱 로그에 카카오 키 없음 확인.
+- `docker build` 후 이미지 안 `/app/branches/branches.json` 248곳 확인. `npm test` 81개 통과.
+- 운영 `.env`에 `KAKAO_REST_API_KEY`가 있어야 실제 거리가 나온다(없으면 모두 기본 거리). 운영 배포는 미실행.
 
 ### 2026-11-17 주문번호 취소 ②단계 (replant Task C)
 
@@ -32,7 +40,7 @@
 - DB 스키마가 바뀌었다(`plan_json`, `progress_origin_at`, `stage_times_json`). 예전 DB 파일이면 기동 때 오류로 멈춘다(개발 모드: 파일 삭제 후 재시작).
 - `npm run typecheck` 오류 없음, `npm test` 62개 통과(거리·시각표·경로 계획·카카오 가짜 응답 포함).
 - 로컬 E2E (`npx tsx src/main.ts`, `SPEED_MULTIPLIER=120`, 카카오 키·지점 표 없음 → 기본 거리): 예약 201 → `CANCEL_LOCKED`·`PICKED_UP`·`ARRIVED_ORIGIN`·`IN_TRANSIT`(30000)·`ARRIVED_DEST`·`OUT_FOR_DELIVERY`(5000)·`DELIVERED` 웹훅이 약 52초 동안 순서대로 도착, 주문번호 조회 200.
-- 실제 카카오 호출과 실제 우체국 지점 표는 미검증(③단계).
+- 실제 카카오 호출과 실제 우체국 지점 표는 ③단계에서 검증했다(위 기록).
 
 ### 2026-10-16 운영 EC2 배포 준비 (JustCommit B안)
 
