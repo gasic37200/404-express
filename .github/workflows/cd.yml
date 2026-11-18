@@ -1,0 +1,101 @@
+# main에 push되면 테스트 → 이미지를 GHCR에 올리고 → 앱 서버에서 떠 있는 404-express를 새 이미지로 바꾼다.
+#
+# 1. build:  typecheck · test → ghcr.io/gasic37200/404-express:{커밋7자리} + latest
+# 2. deploy: 앱 서버 self-hosted 러너(라벨 replant-app)가 ~/404-express 에서 compose pull · up
+#            레포 변수 CD_DEPLOY가 'true'일 때만 실행. 컨테이너가 아직 없으면 이미지만 받아 둔다 (처음 올리기는 수동)
+#
+# GHCR 패키지는 공개로 둔다 → 서버에 pull 토큰이 필요 없다 (이미지에는 코드만, 비밀값은 서버 .env)
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/gasic37200/404-express
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - id: tag
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: vars.CD_DEPLOY == 'true'
+    runs-on: [self-hosted, replant-app]
+    timeout-minutes: 10
+    env:
+      IMAGE_TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docker-compose.prod.yml
+          sparse-checkout-cone-mode: false
+
+      - name: 배포
+        run: |
+          set -eu
+          # 서버 ~/404-express 에는 compose 파일과 .env(비밀값, 서버에만)만 둔다. compose 파일은 매번 레포 것으로 갱신
+          mkdir -p "$HOME/404-express"
+          cp docker-compose.prod.yml "$HOME/404-express/docker-compose.prod.yml"
+          cd "$HOME/404-express"
+          test -f .env || { echo "::error::~/404-express/.env 가 없습니다 (.env.example 참고, 처음 올리기는 수동)"; exit 1; }
+          COMPOSE="docker compose -f docker-compose.prod.yml"
+          $COMPOSE pull 404-express
+          if [ -z "$($COMPOSE ps -a -q 404-express)" ]; then
+            echo "::warning::404-express 컨테이너가 아직 없어 이미지만 받아 둠 (처음 올리기는 수동)"
+            exit 0
+          fi
+          # 컨테이너 HEALTHCHECK(/health)가 healthy가 될 때까지 기다린다
+          $COMPOSE up -d --no-deps --no-build --wait --wait-timeout 120 404-express
+          echo "배포 완료: $IMAGE:$IMAGE_TAG"
