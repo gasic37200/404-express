@@ -1,10 +1,12 @@
 # 운영 EC2용. JustCommit과 같은 EC2에서 외부 네트워크 replant-net으로만 연결한다.
 # 처음 한 번: docker network create replant-net
-# 실행: docker compose -f docker-compose.prod.yml up -d --build
+# 실행: docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
+#   이미지는 CD(.github/workflows/cd.yml)가 GHCR에 올린다. 특정 커밋으로: IMAGE_TAG=a1b2c3d docker compose ... up -d
+#   서버에서 직접 빌드하려면 up -d --build (build: . 를 쓴다)
 services:
   404-express: # JustCommit이 http://404-express:3000 으로 부른다. 이름을 바꾸면 JustCommit COURIER_BASE_URL도 바꿔야 한다
     build: .
-    image: 404-express:prod
+    image: ghcr.io/gasic37200/404-express:${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: .env
     environment:

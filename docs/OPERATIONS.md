@@ -11,11 +11,19 @@
 | 로컬 검증 | 완료 (아래 기록) |
 | 커밋·push | `2b71518`까지 push 완료 (2026-11-18) |
 | 운영 배포 (EC2, `replant-net`) | 이 세션 기록상 미실행. 준비 파일만 작성 (2026-10-16). 배포 때 `courier-data` 볼륨 삭제 필요(스키마 변경), 운영 `.env`에 `KAKAO_REST_API_KEY` 필요 |
+| CD (GitHub Actions) | `.github/workflows/cd.yml` 작성 (2026-11-18). main push → GHCR `ghcr.io/gasic37200/404-express` → 앱 서버 러너가 떠 있으면 갱신. 실제 실행 미확인 |
 | 운영 검증 (JustCommit 서버와 연동) | 미실행. market B1(PR #505)과 계약 비교는 일치(2026-11-18, 문서 대조만). market 요금표 수신부는 아직 없음 |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
 
+### 2026-11-18 CD 추가 (replant MSA 앱 서버)
+
+- 사용자 결정: 이미지는 GHCR(공개 패키지)에서 받고, 서버에서 빌드하지 않는다. 배포는 앱 서버 self-hosted 러너(라벨 `replant-app`, SSH · AWS 키 미사용).
+- `cd.yml`: build(typecheck · test · 이미지 push `:{커밋7}` + `latest`) → deploy(레포 변수 `CD_DEPLOY=true`일 때만). 서버 `~/404-express`에 compose 파일을 매번 복사하고 `.env`는 서버에만. 컨테이너가 없으면 이미지만 받아 둔다(처음 올리기는 수동).
+- `docker-compose.prod.yml`: `image`를 `ghcr.io/gasic37200/404-express:${IMAGE_TAG:-latest}`로. `build: .`는 남겨 서버 직접 빌드도 가능.
+- 로컬 확인: `npm run typecheck` 통과, `npm test` 101개 통과(배송비 요금표 머지 뒤 재확인), 임시 `.env`로 `docker compose config`에서 `image` 치환 확인(`IMAGE_TAG=abc1234`), `docker build` 성공. 워크플로 실제 실행 · 서버 배포는 미실행.
+- 남은 것 (JustCommit 쪽 확인 필요): MSA 앱 서버에서는 market이 K3s 파드라 Docker 네트워크 `replant-net` 이름으로 404-express를 못 찾는다. 처음 올릴 때 사설 IP 포트 공개(예: `10.0.7.76:3000`)와 웹훅 주소(`replant-app:8080` → market NodePort `10.0.7.76:30083`)를 정해야 한다.
 ### 2026-11-18 배송비 요금표
 
 - `GET /api/v1/shippingFees`, `PUT /api/v1/admin/shippingFees`, `SHIPPING_FEES_CHANGED` 웹훅(요금표 전체) 추가. 초기 요금표 `fees/shipping-fees.json`(기본 3,000 + 제주 +3,000 / 도서산간 +5,000 할증, 도서산간 31구간)을 비어 있을 때만 버전 1로 넣는다.
