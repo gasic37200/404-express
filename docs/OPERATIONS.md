@@ -9,13 +9,22 @@
 | 설계 | 완료 (2026-10-08 사용자와 합의, design.md) |
 | 구현 | 완료: 예약·조회·취소·admin 진행·웹훅 outbox·자동 진행. 거리 시뮬레이션 ①단계(경로 계획·단계·웹훅·조회)·②단계(주문번호 취소·반송)·③단계(우체국 지점 표) 완료. 배송비 요금표(조회·변경·웹훅) 완료 |
 | 로컬 검증 | 완료 (아래 기록) |
-| 커밋·push | `2b71518`까지 push 완료 (2026-11-18) |
-| 운영 배포 (replant 앱 서버 `10.0.7.76`) | 미실행. 주소를 MSA용으로 바꿈(2026-11-18, 아래 기록). 첫 기동은 서버에서 수동. 배포 때 `courier-data` 볼륨 삭제 필요(스키마 변경), 운영 `.env`에 `KAKAO_REST_API_KEY` 필요 |
+| 커밋·push | `7e36a0b`까지 push 완료 (2026-11-18), 이후 문서 기록 |
+| 운영 배포 (replant 앱 서버 `10.0.7.76`) | 완료 (2026-11-18 첫 기동, 11/20 카카오 키 추가). 이후 main push마다 CD가 컨테이너 교체 |
 | CD (GitHub Actions) | `.github/workflows/cd.yml` 작성 (2026-11-18). main push → GHCR `ghcr.io/gasic37200/404-express` → 앱 서버 러너가 떠 있으면 갱신. 실제 실행 미확인 |
-| 운영 검증 (JustCommit 서버와 연동) | 미실행. market B1(PR #505)과 계약 비교는 일치(2026-11-18, 문서 대조만). market 요금표 수신부는 아직 없음 |
+| 운영 검증 (JustCommit 서버와 연동) | 완료 (2026-11-20 ~ 21): 예약 · 배송 웹훅 · 취소 웹훅 · 요금표 웹훅 모두 market 반영 확인 (아래 기록) |
 | 관리자 UI·바코드 | 미착수 (나중에) |
 
 ## 기록
+
+### 2026-11-18 ~ 21 운영 배포 · 연동 검증 (replant 앱 서버, JustCommit #525 · #589)
+
+- 첫 기동 (11/18, 사용자가 서버에서 실행): `~/404-express/.env`(키 2개는 JustCommit `~/secrets/market.env`에서 값 출력 없이 복사 · `cmp`로 일치 확인, `WEBHOOK_URL`, `ADMIN_API_KEY`) → `up -d` → healthy, `curl http://10.0.7.76:3000/health` 200, `ss`로 `10.0.7.76:3000`에만 LISTEN. JustCommit K3s 임시 파드에서도 `/health` 200.
+- 첫 요금표 웹훅(버전 1)은 market 수신부가 없어 400 → `DEAD`. Gateway 30080을 지나 market까지 도달한 것은 확인.
+- 실제 주문 (11/20): 판매자 수락 5초 뒤 예약 `404000000002`(`BOOKED`), admin advance → `CANCEL_LOCKED` · `PICKED_UP` 웹훅 `SENT`. 앞 주문 `404000000001` 취소 `CANCELLED` 웹훅도 `SENT`.
+- 카카오 키 (11/20): `KAKAO_REST_API_KEY` 추가 후 `up -d --force-recreate`, 키 없음 경고 없음 · 다음 예약에서 좌표 변환 실패 로그 없음(사용자 확인).
+- 요금표 웹훅 (11/21): JustCommit 수신부(PR #592) 배포 뒤 `DEAD` 이벤트를 admin 재전송 → `SENT`, market `shipping_fee_table`에 버전 1 저장 확인(사용자 확인).
+- 남은 것: 없음. 운영 DB는 이제 보존 대상이므로 스키마 변경 시 기존 데이터 보존 방법을 정해야 한다(AGENTS.md 「현재 작업 모드」).
 
 ### 2026-11-18 MSA 앱 서버 주소 (JustCommit #525)
 
